@@ -16,6 +16,7 @@ def main():
     for voice in config_manager.AVAILABLE_VOICES:
         with patch.object(config_manager, "get_voice", return_value=voice):
             pcm = speech.synthesize("Hello. Your home AI is ready. What would you like to work on?")
+            speech.startup_audio()
         with wave.open(str(folder / f"{voice}.wav"), "wb") as output:
             output.setnchannels(1)
             output.setsampwidth(2)

@@ -1014,12 +1014,12 @@ class JarvisLive:
             ),
         })
 
-        parts = [time_ctx, identity_ctx]
-        if mem_str:
-            parts.append(mem_str)
-        parts.append(sys_prompt)
+        # Qwen inserts tool schemas after the system message. Keep changing
+        # context in a separate message AFTER that stable, expensive prefix.
+        parts = [sys_prompt, identity_ctx]
 
-        return {"system_instruction": "\n".join(parts), "declarations": _all_decls}
+        return {"system_instruction": "\n".join(parts), "declarations": _all_decls,
+                "session_context": "\n".join([mem_str, time_ctx])}
 
     async def _execute_tool(self, fc) -> types.FunctionResponse:
         name = fc.name
@@ -1635,8 +1635,8 @@ class JarvisLive:
 
     async def _send_startup_briefing(self) -> None:
         """
-        Two-phase briefing optimized for speed:
-          Phase 1 — instant greeting (no tools) → speech starts in <1s
+        Two-phase briefing:
+          Phase 1 — cached English greeting without a model round trip
           Phase 2 — news pre-fetched in a background thread while Phase 1 plays,
                     delivered as ready text (no Gemini tool-call round-trip) and
                     shown on the UI content panel. Waits for turn_complete event
@@ -1692,10 +1692,14 @@ class JarvisLive:
         if self._turn_done_event:
             self._turn_done_event.clear()
 
-        await self.session.send_client_content(
-            turns={"role": "user", "parts": [{"text": p1}]},
-            turn_complete=True,
-        )
+        cached_greeting = not lang or lang.lower() in ("english", "en", "en-us", "en-gb")
+        if cached_greeting:
+            await self.session.say_startup()
+        else:
+            await self.session.send_client_content(
+                turns={"role": "user", "parts": [{"text": p1}]},
+                turn_complete=True,
+            )
         print("[JARVIS] Briefing phase 1 (greeting) sent.")
 
         # ── Phase 2: fire as soon as Phase 1 audio is done ───────────────────
@@ -1754,6 +1758,10 @@ class JarvisLive:
                         "News headlines could not be fetched right now. "
                         f"Let the user know briefly.{lang_str}"
                     )
+
+                if cached_greeting and session_clause:
+                    p2 += session_clause
+                p2 += " Do not greet the user again."
 
                 await self.session.send_client_content(
                     turns={"role": "user", "parts": [{"text": p2}]},

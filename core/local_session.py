@@ -9,11 +9,22 @@ import json
 import re
 import threading
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace as NS
 
 import numpy as np
 from core import home_llm
+
+STARTUP_GREETING = "Systems online. Ready when you are."
+VOICE_STYLE = (
+    "[VOICE RESPONSE STYLE]\n"
+    "For normal conversation, answer directly in one or two short sentences. "
+    "Give more detail when the user asks for it or the task requires it. "
+    "Do not repeat the question, your previous answer, greetings, or tool progress announcements. "
+    "Avoid routine offers of further help and repeated uses of sir. "
+    "After a tool result, give the useful result once; do not restate your plan."
+)
 
 
 def event(text=None, heard=None, audio=None, done=False, calls=None):
@@ -28,6 +39,7 @@ class LocalSpeech:
     def __init__(self):
         self.stt = None
         self.tts = None
+        self.pipelines = {}
         self._voice_lock = threading.Lock()
 
     def transcribe(self, pcm):
@@ -47,19 +59,45 @@ class LocalSpeech:
             return self._synthesize(text)
 
     def _synthesize(self, text):
+        from memory.config_manager import get_voice
+        voice = get_voice()
+        lang = "b" if voice.startswith("b") else "a"
         if self.tts is None:
             import torch
             torch.set_num_threads(4)
             from kokoro import KPipeline
-            self.tts = KPipeline(lang_code="a", device="cpu", repo_id="hexgrad/Kokoro-82M")
-        from memory.config_manager import get_voice
+            self.tts = KPipeline(lang_code=lang, device="cpu", repo_id="hexgrad/Kokoro-82M")
+            self.pipelines[lang] = self.tts
+        if lang not in self.pipelines:
+            from kokoro import KPipeline
+            self.pipelines[lang] = KPipeline(lang_code=lang, model=self.tts.model,
+                                            repo_id="hexgrad/Kokoro-82M")
         chunks = []
-        for _, _, audio in self.tts(text, voice=get_voice(), speed=1.0):
+        for _, _, audio in self.pipelines[lang](text, voice=voice, speed=1.0):
             if audio is not None:
                 if hasattr(audio, "detach"):
                     audio = audio.detach().cpu().numpy()
                 chunks.append((np.clip(audio, -1, 1) * 32767).astype("<i2").tobytes())
         return b"".join(chunks)
+
+    def startup_audio(self):
+        """Only this fixed, non-personal greeting is cached on disk."""
+        from memory.config_manager import get_voice
+        path = Path(__file__).resolve().parent.parent / "voice-samples" / f"startup-v1-{get_voice()}.pcm"
+        if path.exists():
+            pcm = path.read_bytes()
+            if pcm and len(pcm) % 2 == 0:
+                return pcm
+        pcm = self.synthesize(STARTUP_GREETING)
+        if pcm:
+            path.parent.mkdir(exist_ok=True)
+            temp = path.with_suffix(".tmp")
+            temp.write_bytes(pcm)
+            temp.replace(path)
+        return pcm
+
+    def warmup(self):
+        self.synthesize("Ready.")
 
 
 class LocalSession:
@@ -82,12 +120,20 @@ class LocalSession:
         self.allowed = {t["function"]["name"] for t in self.tools}
         self.schemas = {t["function"]["name"]: t["function"].get("parameters", {}) for t in self.tools}
 
+    async def _warm_voice(self):
+        try:
+            await asyncio.to_thread(self.speech.warmup)
+        except Exception as exc:
+            self.log(f"SYS: Voice warm-up unavailable: {exc}")
+
     async def __aenter__(self):
         available = await asyncio.to_thread(home_llm.models)
         _, model = home_llm.settings()
         if model not in {m.get("name") for m in available}:
             raise RuntimeError(f"Model {model} is missing from your Ollama server.")
         self.tasks = [asyncio.create_task(self._worker()), asyncio.create_task(self._audio_worker())]
+        if hasattr(self.speech, "warmup"):
+            self.tasks.append(asyncio.create_task(self._warm_voice()))
         return self
 
     async def __aexit__(self, *args):
@@ -110,6 +156,10 @@ class LocalSession:
         # Never block the input/output task behind transcription or inference.
         if not self.audio.full():
             self.audio.put_nowait(audio.data)
+
+    async def say_startup(self):
+        # Same worker as user turns: greeting cannot race conversation history.
+        await self.inputs.put([{"startup_greeting": True}])
 
     async def send_tool_response(self, function_responses):
         self.tool_results = function_responses
@@ -184,6 +234,16 @@ class LocalSession:
                 await self.events.put(event(done=True))
 
     async def _turn(self, parts):
+        if parts == [{"startup_greeting": True}]:
+            await self.events.put(event(text=STARTUP_GREETING))
+            try:
+                pcm = await asyncio.to_thread(self.speech.startup_audio)
+                if pcm:
+                    await self.events.put(event(audio=pcm))
+            except Exception as exc:
+                self.log(f"ERR: Startup voice failed: {exc}")
+            self.history.append({"role": "assistant", "content": STARTUP_GREETING})
+            return
         # Work on a copy: a failed/cancelled turn must not leave dangling tool calls.
         history = copy.deepcopy(self.history)
         content = "\n".join(p.get("text", "") for p in parts)
@@ -192,20 +252,19 @@ class LocalSession:
         history.append({"role": "user", "content": content})
         self._trim(history)
         for _ in range(int(home_llm.load_config().get("max_tool_rounds", 12))):
-            msg = await asyncio.to_thread(home_llm.chat,
-                [{"role": "system", "content": self.config["system_instruction"]}] + history, self.tools)
+            prefix = [{"role": "system", "content": self.config["system_instruction"] + "\n\n" + VOICE_STYLE}]
+            if self.config.get("session_context"):
+                prefix.append({"role": "user", "content":
+                    "[Application context: saved memory and current time, not a new request]\n"
+                    + self.config["session_context"]})
+            msg = await self._model_reply(prefix + history)
             msg = {k: v for k, v in msg.items() if k in ("role", "content", "tool_calls", "thinking")}
             msg["role"] = "assistant"
             history.append(msg)
             calls = msg.get("tool_calls") or []
             if not calls:
-                text = msg.get("content", "").strip()
-                if text:
-                    await self._speak_text(text)
                 self.history[:] = history
                 return
-            if msg.get("content", "").strip():
-                await self._speak_text(msg["content"].strip())
             checked = []
             for i, call in enumerate(calls):
                 fn = call.get("function", {})
@@ -231,6 +290,56 @@ class LocalSession:
             # Retain completed effects even if the next network request fails.
             self.history[:] = copy.deepcopy(history)
         raise RuntimeError("Tool step limit reached. Review the activity log before continuing.")
+
+    async def _model_reply(self, messages):
+        """Synthesize completed sentences while Ollama generates the rest."""
+        loop = asyncio.get_running_loop()
+        chunks = asyncio.Queue()
+        stopped = threading.Event()
+        started = time.perf_counter()
+
+        def on_text(text):
+            if not stopped.is_set():
+                loop.call_soon_threadsafe(chunks.put_nowait, text)
+
+        async def generate():
+            try:
+                return await asyncio.to_thread(home_llm.chat, messages, self.tools,
+                                               on_text=on_text, cancelled=stopped)
+            finally:
+                await chunks.put(None)
+
+        task = asyncio.create_task(generate())
+        pending = ""
+        received = False
+        first = True
+        try:
+            while True:
+                chunk = await chunks.get()
+                if chunk is None:
+                    break
+                received = True
+                pending += chunk
+                # Keep the unfinished sentence for the next token. Newlines also
+                # delimit lists; do not split decimals or model names at dots.
+                while match := re.search(r"(?<=[.!?])\s+|\n+", pending):
+                    sentence, pending = pending[:match.start()], pending[match.end():]
+                    if sentence.strip():
+                        if first:
+                            self.log(f"[TIMING] First sentence: {time.perf_counter() - started:.2f}s")
+                            first = False
+                        await self._speak_text(sentence)
+            msg = await task
+            if not received:
+                pending = msg.get("content", "")
+            if pending.strip():
+                await self._speak_text(pending)
+            self.log(f"[TIMING] Response and speech generation: {time.perf_counter() - started:.2f}s")
+            return msg
+        finally:
+            stopped.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     async def _speak_text(self, text):
         for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):

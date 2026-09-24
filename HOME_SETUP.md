@@ -35,13 +35,28 @@ Each clone needs its own environment: installing packages in another copy of
 Mark-LIV does not install them here. If a dependency is missing, the launcher
 prints the repair command with the exact interpreter path to use.
 
-`download_voices.py` downloads Whisper and Kokoro weights, five voice presets,
+`download_voices.py` downloads Whisper and Kokoro weights, seven voice presets,
 and generates WAV previews in ignored `voice-samples/`. These are new local
-voices, not copies of Gemini voices. Pick Michael, Fenrir, Puck, Heart, or Bella
+voices, not copies of Gemini voices. Pick George or Fable for British English,
+or Michael, Fenrir, Puck, Heart, or Bella for American English
 in the existing customization panel. First-time setup requires internet; after
-the models are cached, speech processing is local. Current voice presets are
-American English; Gemini's voices and full multilingual speech parity are not
-provided by these presets.
+the models are cached, speech processing is local. These presets do not provide
+Gemini's voices or full multilingual speech parity.
+
+The download also caches a fixed startup greeting for every voice. English
+startup greetings play without waiting for Ollama or loading PyTorch. The voice
+model warms in the background for subsequent replies. Without a cached greeting,
+the first launch must synthesize it once. Other languages keep the generated
+greeting. Normal replies stream sentence by sentence while Ollama is generating,
+and default to one or two sentences unless the request needs more detail.
+Timing entries in the log measure sentence readiness and speech generation,
+not the final speaker playback time. Ollama keeps its model loaded for 30 minutes
+by default; set `llm_keep_alive` to change this.
+Changing time and memory information is sent after the stable system prompt and
+tool definitions so reconnects can reuse Ollama's prompt cache. A cold cache (or switching to the vision model)
+can still make the first generated answer slow; the cached greeting remains
+independent of that delay. Server timing logs separate load, prompt processing,
+and answer generation.
 
 ## Configuration
 

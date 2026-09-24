@@ -75,21 +75,20 @@ def save_assistant_config(assistant_name: str, user_name: str) -> None:
 
 
 # ── Assistant voice ──────────────────────────────────────────────────────────
-# Gemini Live prebuilt voices. Names are proper nouns — identical in every
-# language, so this list is safe to show verbatim in any locale.
-AVAILABLE_VOICES = ["am_michael", "am_fenrir", "am_puck", "af_heart", "af_bella"]
+# Kokoro voices. British voices use the British pronunciation pipeline.
+AVAILABLE_VOICES = ["bm_george", "bm_fable", "am_michael", "am_fenrir", "am_puck", "af_heart", "af_bella"]
 DEFAULT_VOICE    = "am_michael"
 
 
 def get_voice() -> str:
-    """Return the configured Live voice, falling back to the default if unset
+    """Return the configured local voice, falling back to the default if unset
     or if the stored value is not a voice we recognise."""
     v = load_api_keys().get("voice_name", DEFAULT_VOICE) or DEFAULT_VOICE
     return v if v in AVAILABLE_VOICES else DEFAULT_VOICE
 
 
 def save_voice(voice_name: str) -> None:
-    """Persist the chosen Live voice. Unknown names collapse to the default so a
+    """Persist the chosen local voice. Unknown names collapse to the default so a
     bad value can never reach the API and break the session."""
     ensure_config_dir()
     data: dict = {}

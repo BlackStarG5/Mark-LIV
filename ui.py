@@ -1661,6 +1661,7 @@ class CustomizeOverlay(QWidget):
         voice_row = QHBoxLayout(); voice_row.setSpacing(4)
         for _v in AVAILABLE_VOICES:
             b = QPushButton(_v.split("_", 1)[-1].title())
+            b.setToolTip("British English" if _v.startswith("b") else "American English")
             b.setCheckable(True)
             b.setFixedHeight(28)
             b.setFont(QFont("Courier New", 8, QFont.Weight.Bold))

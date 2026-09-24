@@ -67,7 +67,7 @@ def identity_instruction(model=None):
     )
 
 
-def chat(messages, tools=None, timeout=180, model=None, think=None):
+def chat(messages, tools=None, timeout=180, model=None, think=None, on_text=None, cancelled=None):
     cfg = load_config()
     url, default = settings()
     messages = [dict(message) for message in messages]
@@ -76,22 +76,59 @@ def chat(messages, tools=None, timeout=180, model=None, think=None):
         messages[0]["content"] = identity + "\n\n" + messages[0].get("content", "")
     else:
         messages.insert(0, {"role": "system", "content": identity})
-    payload = {"model": model or default, "messages": messages, "stream": False,
+    payload = {"model": model or default, "messages": messages, "stream": on_text is not None,
                "think": cfg.get("thinking_enabled", False) if think is None else think,
-               "keep_alive": cfg.get("llm_keep_alive", "5m"),
+               "keep_alive": cfg.get("llm_keep_alive", "30m"),
                "options": {"num_ctx": int(cfg.get("llm_context", 16384)),
                            "num_predict": int(cfg.get("llm_max_tokens", 2048))}}
     if tools:
         payload["tools"] = tools
     # Serialize requests rather than concurrently loading two models on the RX 580.
     with _MODEL_LOCK:
-        response = requests.post(f"{url}/api/chat", json=payload, headers=_headers(), timeout=(10, timeout))
+        if cancelled is not None and cancelled.is_set():
+            return {"role": "assistant", "content": ""}
+        response = requests.post(f"{url}/api/chat", json=payload, headers=_headers(), timeout=(10, timeout),
+                                 stream=on_text is not None)
         if response.status_code >= 400:
             raise RuntimeError(f"Ollama returned {response.status_code}: {response.text[:400]}")
         response.raise_for_status()
-        body = response.json()
+        if on_text is None:
+            body = response.json()
+        else:
+            message = {"role": "assistant", "content": ""}
+            body = {}
+            try:
+                for line in response.iter_lines(chunk_size=1):
+                    if cancelled is not None and cancelled.is_set():
+                        return message
+                    if not line:
+                        continue
+                    body = json.loads(line)
+                    if body.get("error"):
+                        raise RuntimeError(body["error"])
+                    part = body.get("message", {})
+                    content = part.get("content", "")
+                    if content:
+                        message["content"] += content
+                        on_text(content)
+                    if part.get("tool_calls"):
+                        message.setdefault("tool_calls", []).extend(part["tool_calls"])
+                    if body.get("done"):
+                        break
+                if not body.get("done"):
+                    raise RuntimeError("Ollama stream ended before the response was complete.")
+                body["message"] = message
+            finally:
+                response.close()
     if body.get("error"):
         raise RuntimeError(body["error"])
+    if "total_duration" in body:
+        seconds = lambda key: body.get(key, 0) / 1_000_000_000
+        print(f"[TIMING] Ollama load={seconds('load_duration'):.2f}s "
+              f"prompt={seconds('prompt_eval_duration'):.2f}s "
+              f"generate={seconds('eval_duration'):.2f}s "
+              f"input_tokens={body.get('prompt_eval_count', 0)} "
+              f"output_tokens={body.get('eval_count', 0)}", flush=True)
     if body.get("done_reason") == "length":
         raise RuntimeError("Model response reached its output limit; increase llm_max_tokens or shorten the request.")
     message = body.get("message")
