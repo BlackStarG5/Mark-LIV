@@ -1,0 +1,14 @@
+{
+  "llm_url": "http://YOUR-SERVER-IP:11434",
+  "llm_model": "qwen3:8b",
+  "vision_model": "qwen3.5:9b",
+  "voice_name": "am_michael",
+  "stt_model": "base",
+  "thinking_enabled": false,
+  "llm_context": 16384,
+  "llm_max_tokens": 2048,
+  "max_tool_rounds": 12,
+  "history_chars": 18000,
+  "speech_silence_seconds": 0.7,
+  "speech_threshold": 250
+}

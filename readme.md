@@ -1,3 +1,11 @@
+# Home AI fork — Ollama + local speech
+
+This fork runs **qwen3:8b on your home server**, with local Whisper/Kokoro speech and optional qwen3.5:9b image interpretation. **Start with [HOME_SETUP.md](HOME_SETUP.md)** for installation, configuration, and differences from the original. No Gemini API key is required.
+
+---
+
+The upstream documentation below describes the original Gemini edition.
+
 # ⚙️ MARK LIV (54)
 ### The Ultimate Cross-Platform Personal AI Assistant — By FatihMakes
 

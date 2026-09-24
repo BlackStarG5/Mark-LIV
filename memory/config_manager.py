@@ -47,8 +47,7 @@ def get_gemini_key() -> str | None:
     return load_api_keys().get("gemini_api_key")
 
 def is_configured() -> bool:
-    key = get_gemini_key()
-    return bool(key and len(key) > 15)
+    return bool(load_api_keys().get("llm_url"))
 
 
 def get_assistant_name() -> str:
@@ -78,8 +77,8 @@ def save_assistant_config(assistant_name: str, user_name: str) -> None:
 # ── Assistant voice ──────────────────────────────────────────────────────────
 # Gemini Live prebuilt voices. Names are proper nouns — identical in every
 # language, so this list is safe to show verbatim in any locale.
-AVAILABLE_VOICES = ["Charon", "Puck", "Kore", "Fenrir", "Aoede"]
-DEFAULT_VOICE    = "Charon"
+AVAILABLE_VOICES = ["am_michael", "am_fenrir", "am_puck", "af_heart", "af_bella"]
+DEFAULT_VOICE    = "am_michael"
 
 
 def get_voice() -> str:

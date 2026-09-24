@@ -46,8 +46,8 @@ from pathlib import Path
 
 import sounddevice as sd
 import numpy as np
-from google import genai
 from google.genai import types
+from core.local_session import LocalSession, LocalSpeech
 from ui import JarvisUI
 from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
@@ -96,7 +96,7 @@ def get_base_dir():
 BASE_DIR        = get_base_dir()
 API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
-LIVE_MODEL          = "models/gemini-3.1-flash-live-preview"
+LIVE_MODEL          = "qwen3:8b"
 CHANNELS            = 1
 SEND_SAMPLE_RATE    = 16000 
 RECEIVE_SAMPLE_RATE = 24000
@@ -532,6 +532,8 @@ class JarvisLive:
         self.ui             = ui
         self._asst_name     = "JARVI    S"   # updated each session from config
         self.session              = None
+        self._local_history       = []
+        self._local_speech        = LocalSpeech()
         self.audio_in_queue       = None
         self.out_queue            = None
         self._loop                     = None
@@ -784,15 +786,8 @@ class JarvisLive:
             loop.call_soon_threadsafe(ev.set)
 
     def _on_voice_change(self):
-        """Voice picker applied.
-
-        The voice is baked into the session at connect time, so a rebuild is
-        required. It is rebuilt WITHOUT the resumption handle on purpose:
-        resuming restores the server's own session state, and the safe reading
-        is that it restores the voice with it — which would make the picker
-        appear to do nothing. Losing context here is acceptable because changing
-        voice is a deliberate, rare act; losing it on a dropped packet was not."""
-        self.request_reconnect(keep_context=False, reason="new voice")
+        """Local speech reads the new voice on the next sentence."""
+        pass
 
     def _on_audio_device_change(self):
         """Microphone or speaker changed. Both streams are opened inside the
@@ -837,6 +832,10 @@ class JarvisLive:
         if self._wake_enabled and not self._awake:
             self.ui.write_log("SYS: I'm asleep — say 'Hey Jarvis' or tap WAKE NOW first.")
             return
+        self._session_log.append(f"User: {text}")
+        self._last_user_speech = time.monotonic()
+        self._last_out_logged = ""
+        self.ui.set_state("THINKING")
         asyncio.run_coroutine_threadsafe(
             self.session.send_client_content(
                 turns={"role": "user", "parts": [{"text": text}]},
@@ -914,6 +913,8 @@ class JarvisLive:
     def interrupt(self) -> None:
         """Stop JARVIS mid-speech: drain queued audio and open mic immediately."""
         self._interrupted = True
+        if self.session and self._loop:
+            self._loop.call_soon_threadsafe(self.session.interrupt)
         q = self.audio_in_queue
         if q:
             drained = 0
@@ -936,6 +937,7 @@ class JarvisLive:
     def speak(self, text: str):
         if not self._loop or not self.session:
             return
+        self.ui.set_state("THINKING")
         asyncio.run_coroutine_threadsafe(
             self.session.send_client_content(
                 turns={"role": "user", "parts": [{"text": text}]},
@@ -949,7 +951,7 @@ class JarvisLive:
         self.ui.write_log(f"ERR: {tool_name} — {short}")
         self.speak(f"Sir, {tool_name} encountered an error. {short}")
 
-    def _build_config(self) -> types.LiveConnectConfig:
+    def _build_config(self) -> dict:
         from datetime import datetime
 
         # Load customization from config
@@ -1017,98 +1019,7 @@ class JarvisLive:
             parts.append(mem_str)
         parts.append(sys_prompt)
 
-        cfg = dict(
-            response_modalities=["AUDIO"],
-            output_audio_transcription={},
-            input_audio_transcription={},
-            system_instruction="\n".join(parts),
-            tools=[{"function_declarations": _all_decls}],
-            # Hand back the handle captured from the last session_resumption
-            # update. `handle=None` is exactly the old behaviour (ask for
-            # handles, start fresh), so the first connect of a run is unchanged.
-            session_resumption=types.SessionResumptionConfig(
-                handle=self._resume_handle
-            ),
-            # Sliding-window compression: session never dies from a full context
-            # window — JARVIS can stay in one conversation for hours
-            context_window_compression=types.ContextWindowCompressionConfig(
-                sliding_window=types.SlidingWindow(),
-            ),
-            speech_config=types.SpeechConfig(
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name=get_voice()
-                    )
-                )
-            ),
-        )
-        if self._enhanced_live:
-            # Proactive audio: JARVIS stays silent when speech isn't addressed
-            # to it (background chatter, talking to someone else in the room).
-            # (Affective dialog was dropped: gemini-3.1-flash-live does not
-            #  support it, and it never reliably detected tone in practice.
-            #  To restore it on a 2.5 native-audio model, add back:
-            #  cfg["enable_affective_dialog"] = True )
-            if get_proactive_audio_enabled():
-                cfg["proactivity"] = types.ProactivityConfig(proactive_audio=True)
-
-        if self._tuned_live:
-            cfg.update(self._tuning_config())
-
-        return types.LiveConnectConfig(**cfg)
-
-    def _tuning_config(self) -> dict:
-        """The optional knobs, kept apart so one bad field can be dropped wholesale.
-
-        Every one of these is a preview-API field. If a future model release
-        stops accepting any of them the connection fails at setup, so the run
-        loop turns `_tuned_live` off and reconnects on the plain config rather
-        than leaving the user with an assistant that will not start.
-        """
-        out: dict = {}
-
-        # How long the server waits through a pause before deciding your turn is
-        # over. This — not the size of the prompt — is what most of the delay
-        # before a reply actually is, and the default has to suit everybody, so
-        # it is necessarily cautious.
-        turn = get_turn_tuning()
-        if turn.get("enabled", True):
-            detect = types.AutomaticActivityDetection(
-                silence_duration_ms=turn["silence_ms"],
-                prefix_padding_ms=turn["prefix_ms"],
-            )
-            if turn["end_sensitivity"] == "high":
-                detect.end_of_speech_sensitivity = types.EndSensitivity.END_SENSITIVITY_HIGH
-            elif turn["end_sensitivity"] == "low":
-                detect.end_of_speech_sensitivity = types.EndSensitivity.END_SENSITIVITY_LOW
-            if turn["start_sensitivity"] == "high":
-                detect.start_of_speech_sensitivity = types.StartSensitivity.START_SENSITIVITY_HIGH
-            elif turn["start_sensitivity"] == "low":
-                detect.start_of_speech_sensitivity = types.StartSensitivity.START_SENSITIVITY_LOW
-            out["realtime_input_config"] = types.RealtimeInputConfig(
-                automatic_activity_detection=detect)
-
-        # Screenshots and camera frames are tokenised at this resolution and then
-        # stay in the session's context. 'medium' keeps on-screen text legible
-        # for a fraction of a full-resolution frame.
-        res = get_media_resolution()
-        if res != "default":
-            out["media_resolution"] = {
-                "low":    types.MediaResolution.MEDIA_RESOLUTION_LOW,
-                "medium": types.MediaResolution.MEDIA_RESOLUTION_MEDIUM,
-                "high":   types.MediaResolution.MEDIA_RESOLUTION_HIGH,
-            }[res]
-
-        # Thinking is left at the server default deliberately. Forcing the budget
-        # to zero was measured on gemini-3.1-flash-live over interleaved trials
-        # and did not make the first word arrive sooner — this model does not
-        # appear to deliberate on the Live path, so pinning the field only adds a
-        # way for a future release to behave differently. Set "thinking_enabled"
-        # in config/api_keys.json to true to let it reason instead.
-        if get_thinking_enabled():
-            out["thinking_config"] = types.ThinkingConfig(thinking_budget=-1)
-
-        return out
+        return {"system_instruction": "\n".join(parts), "declarations": _all_decls}
 
     async def _execute_tool(self, fc) -> types.FunctionResponse:
         name = fc.name
@@ -2088,13 +1999,9 @@ class JarvisLive:
                 # Fresh client on every reconnect — avoids stale HTTP session state
                 # v1alpha carries proactive audio; if it gets rejected we fall
                 # back to v1beta.
-                client = genai.Client(
-                    api_key=_get_api_key(),
-                    http_options={"api_version": "v1alpha" if self._enhanced_live else "v1beta"}
-                )
-
                 async with (
-                    client.aio.live.connect(model=LIVE_MODEL, config=config) as session,
+                    LocalSession(config, self._local_history, self._local_speech,
+                                 self.ui.write_log) as session,
                     asyncio.TaskGroup() as tg,
                 ):
                     self.session          = session

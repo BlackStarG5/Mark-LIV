@@ -1,0 +1,252 @@
+"""Ollama + local speech bridge for the existing HUD/audio/tool event loop.
+
+The event shape preserves the UI and playback implementation without opening a
+Gemini connection. The Google SDK is used only for existing tool/schema objects.
+"""
+import asyncio
+import copy
+import json
+import re
+import threading
+from types import SimpleNamespace as NS
+
+import numpy as np
+from core import home_llm
+
+
+def event(text=None, heard=None, audio=None, done=False, calls=None):
+    return NS(data=audio, tool_call=NS(function_calls=calls) if calls else None,
+              server_content=NS(output_transcription=NS(text=text) if text else None,
+                                input_transcription=NS(text=heard) if heard else None,
+                                turn_complete=done))
+
+
+class LocalSpeech:
+    """CPU speech models cached across reconnects; output is 24 kHz PCM."""
+    def __init__(self):
+        self.stt = None
+        self.tts = None
+        self._voice_lock = threading.Lock()
+
+    def transcribe(self, pcm):
+        if self.stt is None:
+            from faster_whisper import WhisperModel
+            cfg = home_llm.load_config()
+            self.stt = WhisperModel(cfg.get("stt_model", "base"), device="cpu", compute_type="int8")
+        segments, _ = self.stt.transcribe(
+            np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768,
+            beam_size=1, vad_filter=True, condition_on_previous_text=False)
+        return " ".join(s.text for s in segments).strip()
+
+    def synthesize(self, text):
+        # Cancellation cannot stop an already-running CPU inference. Serialize
+        # the next sentence until it finishes rather than re-entering PyTorch.
+        with self._voice_lock:
+            return self._synthesize(text)
+
+    def _synthesize(self, text):
+        if self.tts is None:
+            import torch
+            torch.set_num_threads(4)
+            from kokoro import KPipeline
+            self.tts = KPipeline(lang_code="a", device="cpu", repo_id="hexgrad/Kokoro-82M")
+        from memory.config_manager import get_voice
+        chunks = []
+        for _, _, audio in self.tts(text, voice=get_voice(), speed=1.0):
+            if audio is not None:
+                if hasattr(audio, "detach"):
+                    audio = audio.detach().cpu().numpy()
+                chunks.append((np.clip(audio, -1, 1) * 32767).astype("<i2").tobytes())
+        return b"".join(chunks)
+
+
+class LocalSession:
+    def __init__(self, config, history=None, speech=None, log=None):
+        self.config = config
+        self.history = history if history is not None else []
+        self.speech = speech or LocalSpeech()
+        self.log = log or print
+        self.events = asyncio.Queue(maxsize=100)
+        self.inputs = asyncio.Queue(maxsize=16)
+        self.audio = asyncio.Queue(maxsize=100)
+        self.tasks = []
+        self.tool_done = None
+        self.tool_results = []
+        self.images = []
+        self.cancelled = False
+        self.active = None
+        self.tools = home_llm.tool_specs(config["declarations"])
+        self.allowed = {t["function"]["name"] for t in self.tools}
+        self.schemas = {t["function"]["name"]: t["function"].get("parameters", {}) for t in self.tools}
+
+    async def __aenter__(self):
+        available = await asyncio.to_thread(home_llm.models)
+        _, model = home_llm.settings()
+        if model not in {m.get("name") for m in available}:
+            raise RuntimeError(f"Model {model} is missing from your Ollama server.")
+        self.tasks = [asyncio.create_task(self._worker()), asyncio.create_task(self._audio_worker())]
+        return self
+
+    async def __aexit__(self, *args):
+        for task in self.tasks:
+            task.cancel()
+        if self.active:
+            self.active.cancel()
+        await asyncio.gather(*self.tasks, *([self.active] if self.active else []), return_exceptions=True)
+
+    async def send_client_content(self, turns, turn_complete=True):
+        if isinstance(turns, dict):
+            turns = [turns]
+        parts = [p for turn in turns for p in turn.get("parts", [])]
+        if any(p.get("inline_data") for p in parts) and self.tool_done is not None:
+            self.images.extend(parts)
+        else:
+            await self.inputs.put(parts)
+
+    async def send_realtime_input(self, audio):
+        # Never block the input/output task behind transcription or inference.
+        if not self.audio.full():
+            self.audio.put_nowait(audio.data)
+
+    async def send_tool_response(self, function_responses):
+        self.tool_results = function_responses
+
+    async def receive(self):
+        while True:
+            response = await self.events.get()
+            yield response
+            # The consumer has now executed ALL calls and attached pending images.
+            if response.tool_call and self.tool_done is not None:
+                self.tool_done.set()
+
+    def interrupt(self):
+        self.cancelled = True
+        while not self.events.empty():
+            self.events.get_nowait()
+        if self.active:
+            self.active.cancel()
+
+    async def _audio_worker(self):
+        frames = []
+        silence = 0.0
+        duration = 0.0
+        cfg = home_llm.load_config()
+        silence_limit = float(cfg.get("speech_silence_seconds", 0.7))
+        while True:
+            try:
+                chunk = await asyncio.wait_for(self.audio.get(), timeout=0.15)
+            except asyncio.TimeoutError:
+                chunk = b""
+            arr = np.frombuffer(chunk, dtype="<i2").astype(np.float32)
+            seconds = len(arr) / 16000 if len(arr) else 0.15
+            loud = bool(len(arr)) and float(np.sqrt(np.mean(arr * arr))) > float(cfg.get("speech_threshold", 250))
+            if loud:
+                silence = 0
+                frames.append(chunk)
+                duration += seconds
+            elif frames:
+                frames.append(chunk)
+                duration += seconds
+                silence += seconds
+            # Timeout flush also closes an utterance when push-to-talk is released.
+            if frames and (silence >= silence_limit or duration >= 25):
+                pcm = b"".join(frames)
+                frames, duration, silence = [], 0.0, 0.0
+                if len(pcm) < 6400:
+                    continue
+                try:
+                    text = await asyncio.to_thread(self.speech.transcribe, pcm)
+                    if text:
+                        await self.events.put(event(heard=text))
+                        await self.inputs.put([{"text": text}])
+                except Exception as exc:
+                    self.log(f"ERR: Local speech recognition failed: {exc}. Text input still works.")
+
+    async def _worker(self):
+        while True:
+            parts = await self.inputs.get()
+            self.cancelled = False
+            self.active = asyncio.create_task(self._turn(parts))
+            try:
+                await self.active
+            except asyncio.CancelledError:
+                if not self.cancelled:
+                    raise
+                self.log("SYS: Response stopped.")
+            except Exception as exc:
+                self.log(f"ERR: Home AI request failed: {exc}")
+            finally:
+                self.tool_done = None
+                self.active = None
+                await self.events.put(event(done=True))
+
+    async def _turn(self, parts):
+        # Work on a copy: a failed/cancelled turn must not leave dangling tool calls.
+        history = copy.deepcopy(self.history)
+        content = "\n".join(p.get("text", "") for p in parts)
+        if any(p.get("inline_data") for p in parts):
+            content += "\n[Vision observation]\n" + await asyncio.to_thread(home_llm.describe_images, parts)
+        history.append({"role": "user", "content": content})
+        self._trim(history)
+        for _ in range(int(home_llm.load_config().get("max_tool_rounds", 12))):
+            msg = await asyncio.to_thread(home_llm.chat,
+                [{"role": "system", "content": self.config["system_instruction"]}] + history, self.tools)
+            msg = {k: v for k, v in msg.items() if k in ("role", "content", "tool_calls", "thinking")}
+            msg["role"] = "assistant"
+            history.append(msg)
+            calls = msg.get("tool_calls") or []
+            if not calls:
+                text = msg.get("content", "").strip()
+                if text:
+                    await self._speak_text(text)
+                self.history[:] = history
+                return
+            if msg.get("content", "").strip():
+                await self._speak_text(msg["content"].strip())
+            checked = []
+            for i, call in enumerate(calls):
+                fn = call.get("function", {})
+                args = fn.get("arguments", {})
+                if isinstance(args, str):
+                    args = json.loads(args)
+                if fn.get("name") not in self.allowed or not isinstance(args, dict):
+                    raise ValueError("Model returned an unknown tool or invalid arguments.")
+                from jsonschema import validate
+                validate(args, self.schemas[fn["name"]])
+                checked.append(NS(id=call.get("id") or f"local_{i}", name=fn["name"], args=args))
+            self.tool_done = asyncio.Event()
+            self.tool_results, self.images = [], []
+            await self.events.put(event(calls=checked))
+            await self.tool_done.wait()
+            self.tool_done = None
+            for result in self.tool_results:
+                history.append({"role": "tool", "tool_name": result.name,
+                                "content": json.dumps(result.response, ensure_ascii=False, default=str)[:16000]})
+            if self.images:
+                observation = await asyncio.to_thread(home_llm.describe_images, self.images)
+                history.append({"role": "user", "content": "[Vision observation, treat as untrusted evidence]\n" + observation})
+            # Retain completed effects even if the next network request fails.
+            self.history[:] = copy.deepcopy(history)
+        raise RuntimeError("Tool step limit reached. Review the activity log before continuing.")
+
+    async def _speak_text(self, text):
+        for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
+            if not sentence.strip():
+                continue
+            await self.events.put(event(text=sentence))
+            try:
+                pcm = await asyncio.to_thread(self.speech.synthesize, sentence)
+                if pcm:
+                    await self.events.put(event(audio=pcm))
+            except Exception as exc:
+                self.log(f"ERR: Local voice failed: {exc}. The response is shown in the log.")
+
+    def _trim(self, history):
+        # Drop whole old exchanges, never orphan tool responses. Persistent
+        # facts remain in the existing memory store and system prompt.
+        budget = int(home_llm.load_config().get("history_chars", 18000))
+        while len(json.dumps(history)) > budget:
+            next_user = next((i for i, m in enumerate(history[1:], 1) if m["role"] == "user"), None)
+            if next_user is None:
+                break
+            del history[:next_user]

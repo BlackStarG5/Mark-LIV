@@ -1407,11 +1407,11 @@ class SetupOverlay(QWidget):
         sep.setStyleSheet(f"color: {C.BORDER};"); layout.addWidget(sep)
         layout.addSpacing(4)
 
-        layout.addWidget(_lbl("GEMINI API KEY", 8, color=C.TEXT_DIM,
+        layout.addWidget(_lbl("HOME OLLAMA SERVER · QWEN3:8B", 8, color=C.TEXT_DIM,
                                align=Qt.AlignmentFlag.AlignLeft))
         self._key_input = QLineEdit()
-        self._key_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self._key_input.setPlaceholderText("AIza…")
+        self._key_input.setPlaceholderText("http://192.168.1.50:11434")
+        self._key_input.setText(_read_full_config().get("llm_url", ""))
         self._key_input.setFont(QFont("Courier New", 10))
         self._key_input.setFixedHeight(32)
         self._key_input.setStyleSheet(f"""
@@ -1487,7 +1487,9 @@ class SetupOverlay(QWidget):
 
     def _submit(self):
         key = self._key_input.text().strip()
-        if not key:
+        from urllib.parse import urlsplit
+        parsed = urlsplit(key)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
             self._key_input.setStyleSheet(
                 self._key_input.styleSheet() +
                 f" QLineEdit {{ border: 1px solid {C.RED}; }}"
@@ -1645,7 +1647,7 @@ class CustomizeOverlay(QWidget):
         self._user_input.setStyleSheet(_fs)
         lay.addWidget(self._user_input)
 
-        # ── Assistant voice — Gemini prebuilt voices ─────────────────────────
+        # ── Assistant voice — local Kokoro voices ─────────────────────────
         # Names are language-neutral proper nouns, so the row reads the same in
         # every locale. Selecting one and applying rebuilds the Live session.
         from memory.config_manager import AVAILABLE_VOICES, DEFAULT_VOICE
@@ -1658,7 +1660,7 @@ class CustomizeOverlay(QWidget):
         self._voice_btns: dict[str, QPushButton] = {}
         voice_row = QHBoxLayout(); voice_row.setSpacing(4)
         for _v in AVAILABLE_VOICES:
-            b = QPushButton(_v)
+            b = QPushButton(_v.split("_", 1)[-1].title())
             b.setCheckable(True)
             b.setFixedHeight(28)
             b.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
@@ -5172,7 +5174,7 @@ class MainWindow(QMainWindow):
         if not API_FILE.exists(): return False
         try:
             d = json.loads(API_FILE.read_text(encoding="utf-8"))
-            return bool(d.get("gemini_api_key")) and bool(d.get("os_system"))
+            return bool(d.get("llm_url")) and bool(d.get("os_system"))
         except Exception:
             return False
 
@@ -5191,8 +5193,11 @@ class MainWindow(QMainWindow):
 
     def _on_setup_done(self, key: str, os_name: str):
         os.makedirs(CONFIG_DIR, exist_ok=True)
+        config = _read_full_config()
+        config.update(llm_url=key.rstrip("/"), llm_model="qwen3:8b", os_system=os_name)
+        config.setdefault("vision_model", "qwen3.5:9b")
         API_FILE.write_text(
-            json.dumps({"gemini_api_key": key, "os_system": os_name}, indent=4),
+            json.dumps(config, indent=4),
             encoding="utf-8",
         )
         self._ready = True
