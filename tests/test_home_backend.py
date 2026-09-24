@@ -22,6 +22,21 @@ class Speech:
 
 
 class SessionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_voice_logs_once_but_keeps_all_response_text(self):
+        logs = []
+        speech = Speech()
+        session = LocalSession(CONFIG, speech=speech, log=logs.append)
+        with patch.object(speech, "synthesize", side_effect=ModuleNotFoundError("No module named 'torch'")) as synth:
+            await session._speak_text("First sentence. Second sentence.")
+            await session._speak_text("Another reply.")
+        self.assertEqual(synth.call_count, 1)
+        self.assertEqual(len(logs), 1)
+        self.assertIn("pip install -r", logs[0])
+        texts = []
+        while not session.events.empty():
+            texts.append(session.events.get_nowait().server_content.output_transcription.text)
+        self.assertEqual(texts, ["First sentence.", "Second sentence.", "Another reply."])
+
     async def collect(self, session, handler=None):
         output = []
         async for ev in session.receive():
@@ -110,7 +125,22 @@ class TransportTests(unittest.TestCase):
         home_llm.describe_images([{"inline_data": {"mime_type": "image/png", "data": b"image"}}])
         body = post.call_args.kwargs["json"]
         self.assertEqual(body["model"], "qwen3.5:9b")
-        self.assertEqual(body["messages"][0]["images"], ["aW1hZ2U="])
+        self.assertEqual(body["messages"][-1]["images"], ["aW1hZ2U="])
+
+    @patch.object(home_llm, "load_config", return_value={"llm_url": "http://test:11434", "llm_model": "qwen3:8b"})
+    @patch.object(home_llm.requests, "post")
+    def test_identity_uses_configured_model_without_mutating_history(self, post, config):
+        post.return_value.status_code = 200
+        post.return_value.json.return_value = {"message": {"content": "ok"}}
+        messages = [{"role": "system", "content": "You are JARVIS."}, {"role": "user", "content": "Which model?"}]
+        home_llm.chat(messages)
+        prompt = post.call_args.kwargs["json"]["messages"][0]["content"]
+        self.assertIn("qwen3:8b", prompt)
+        self.assertIn("Ollama", prompt)
+        self.assertIn("You are JARVIS.", prompt)
+        self.assertEqual(messages[0]["content"], "You are JARVIS.")
+        home_llm.chat(messages, model="qwen3.5:9b")
+        self.assertIn("qwen3.5:9b", post.call_args.kwargs["json"]["messages"][0]["content"])
 
     def test_property_named_type_keeps_its_schema(self):
         schema = {"type": "OBJECT", "properties": {"type": {"type": "STRING"}}}

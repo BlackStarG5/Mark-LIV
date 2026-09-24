@@ -54,9 +54,28 @@ def tool_specs(declarations):
     return [{"type": "function", "function": normalize_schema(d)} for d in declarations]
 
 
+def identity_instruction(model=None):
+    configured = model or settings()[1]
+    return (
+        "[RUNTIME MODEL IDENTITY — authoritative application configuration]\n"
+        f"Your underlying language model is {configured}, served by Ollama on the user's home server. "
+        "JARVIS (or the user's configured assistant name) is your app/persona name, not your model name. "
+        "Ollama is the serving software, not the Llama model family. "
+        "When asked which model you are, give the exact configured model name above. "
+        "Do not claim to be a proprietary model, Gemini, or Llama unless that is the configured model. "
+        "Speech recognition is local Whisper; speech synthesis is local Kokoro on the user's PC."
+    )
+
+
 def chat(messages, tools=None, timeout=180, model=None, think=None):
     cfg = load_config()
     url, default = settings()
+    messages = [dict(message) for message in messages]
+    identity = identity_instruction(model or default)
+    if messages and messages[0].get("role") == "system":
+        messages[0]["content"] = identity + "\n\n" + messages[0].get("content", "")
+    else:
+        messages.insert(0, {"role": "system", "content": identity})
     payload = {"model": model or default, "messages": messages, "stream": False,
                "think": cfg.get("thinking_enabled", False) if think is None else think,
                "keep_alive": cfg.get("llm_keep_alive", "5m"),

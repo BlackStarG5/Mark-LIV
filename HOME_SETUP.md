@@ -29,6 +29,12 @@ already have completed. Ollama must listen on the LAN interface and the server
 firewall must allow the PC to connect. The app never starts a local Ollama server
 or changes the remote server's settings.
 
+On subsequent launches, double-click `Start-HomeAI.cmd`. It selects this
+checkout's `.venv` and checks speech dependencies before opening the UI.
+Each clone needs its own environment: installing packages in another copy of
+Mark-LIV does not install them here. If a dependency is missing, the launcher
+prints the repair command with the exact interpreter path to use.
+
 `download_voices.py` downloads Whisper and Kokoro weights, five voice presets,
 and generates WAV previews in ignored `voice-samples/`. These are new local
 voices, not copies of Gemini voices. Pick Michael, Fenrir, Puck, Heart, or Bella

@@ -17,6 +17,7 @@ google-genai>=2.8.0,<3
 # SDK schemas only; inference uses Ollama, never Gemini.
 faster-whisper>=1.1,<2
 kokoro>=0.9.4,<1
+torch>=2.2,<3
 soundfile>=0.12,<1
 jsonschema>=4.23,<5
 

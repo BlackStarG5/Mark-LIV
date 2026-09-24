@@ -8,6 +8,8 @@ import copy
 import json
 import re
 import threading
+import sys
+from pathlib import Path
 from types import SimpleNamespace as NS
 
 import numpy as np
@@ -75,6 +77,7 @@ class LocalSession:
         self.images = []
         self.cancelled = False
         self.active = None
+        self.voice_error = None
         self.tools = home_llm.tool_specs(config["declarations"])
         self.allowed = {t["function"]["name"] for t in self.tools}
         self.schemas = {t["function"]["name"]: t["function"].get("parameters", {}) for t in self.tools}
@@ -234,12 +237,19 @@ class LocalSession:
             if not sentence.strip():
                 continue
             await self.events.put(event(text=sentence))
+            if self.voice_error:
+                continue
             try:
                 pcm = await asyncio.to_thread(self.speech.synthesize, sentence)
                 if pcm:
                     await self.events.put(event(audio=pcm))
             except Exception as exc:
-                self.log(f"ERR: Local voice failed: {exc}. The response is shown in the log.")
+                self.voice_error = str(exc)
+                requirements = Path(__file__).resolve().parent.parent / "requirements.txt"
+                self.log(
+                    f'ERR: Local voice unavailable: {exc}. Continuing with text; restart after repair. '
+                    f'Install into this Python: "{sys.executable}" -m pip install -r "{requirements}"'
+                )
 
     def _trim(self, history):
         # Drop whole old exchanges, never orphan tool responses. Persistent
