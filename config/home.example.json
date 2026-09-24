@@ -10,5 +10,7 @@
   "max_tool_rounds": 12,
   "history_chars": 18000,
   "speech_silence_seconds": 0.7,
-  "speech_threshold": 250
+  "speech_threshold": 250,
+  "tts_threads": 8,
+  "startup_news_spoken": false
 }

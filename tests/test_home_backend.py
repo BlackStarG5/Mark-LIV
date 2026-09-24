@@ -24,6 +24,15 @@ class Speech:
 
 
 class SessionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_warmup_never_speaks_or_dispatches_tools(self):
+        session = LocalSession(CONFIG, speech=Speech())
+        with patch.object(home_llm, "chat", return_value={"tool_calls": [{"function": {"name": "read_file"}}]}) as chat:
+            await session._warm_model()
+        self.assertTrue(chat.call_args.kwargs["warmup"])
+        self.assertFalse(chat.call_args.kwargs["think"])
+        self.assertTrue(session.events.empty())
+        self.assertEqual(session.history, [])
+
     async def test_missing_voice_logs_once_but_keeps_all_response_text(self):
         logs = []
         speech = Speech()
@@ -171,6 +180,16 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TransportTests(unittest.TestCase):
+    @patch.object(home_llm, "load_config", return_value={})
+    @patch.object(home_llm.requests, "post")
+    def test_warmup_is_limited_to_one_discarded_token(self, post, config):
+        post.return_value.status_code = 200
+        post.return_value.json.return_value = {"message": {"content": "Hello"}, "done_reason": "length"}
+        home_llm.chat([], warmup=True, think=False)
+        self.assertEqual(post.call_args.kwargs["json"]["options"]["num_predict"], 1)
+        with self.assertRaisesRegex(RuntimeError, "output limit"):
+            home_llm.chat([])
+
     @patch.object(home_llm, "load_config", return_value={})
     @patch.object(home_llm.requests, "post")
     def test_stream_collects_tools_and_text_and_closes_connection(self, post, config):

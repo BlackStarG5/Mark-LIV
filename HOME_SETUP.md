@@ -58,6 +58,25 @@ can still make the first generated answer slow; the cached greeting remains
 independent of that delay. Server timing logs separate load, prompt processing,
 and answer generation.
 
+Automatic startup news is displayed on screen without a model-generated spoken
+summary, so it does not queue ahead of your questions. Set `startup_news_spoken`
+to `true` to restore spoken news. The startup greeting still plays normally.
+The model prepares its stable instruction/tool prefix in the background at
+connection time, generating only one discarded token and executing no tools.
+An immediate question may still wait for this preparation on a cold server.
+Completed microphone transcripts appear immediately as separate log entries.
+Timing diagnostics stay in the console; `First audio ready` includes speech
+synthesis but excludes the audio driver's playback latency.
+
+`tts_threads` defaults to 8, measured faster than 4 on the target PC. Short
+spoken replies are cached in a bounded, voice-specific RAM cache, cleared when
+the app closes. Only the fixed startup greeting is cached on disk.
+
+Weather now uses [Open-Meteo](https://open-meteo.com/en/docs) to return current
+temperature or a daily forecast without opening a browser. Use a city and full
+state/country name. Ambiguous places require clarification; failed lookups do
+not fall back to opening a webpage. US locations default to Fahrenheit.
+
 ## Configuration
 
 See `config/home.example.json`. Merge settings into `config/api_keys.json`;

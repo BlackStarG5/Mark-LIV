@@ -67,7 +67,7 @@ def identity_instruction(model=None):
     )
 
 
-def chat(messages, tools=None, timeout=180, model=None, think=None, on_text=None, cancelled=None):
+def chat(messages, tools=None, timeout=180, model=None, think=None, on_text=None, cancelled=None, warmup=False):
     cfg = load_config()
     url, default = settings()
     messages = [dict(message) for message in messages]
@@ -80,7 +80,7 @@ def chat(messages, tools=None, timeout=180, model=None, think=None, on_text=None
                "think": cfg.get("thinking_enabled", False) if think is None else think,
                "keep_alive": cfg.get("llm_keep_alive", "30m"),
                "options": {"num_ctx": int(cfg.get("llm_context", 16384)),
-                           "num_predict": int(cfg.get("llm_max_tokens", 2048))}}
+                           "num_predict": 1 if warmup else int(cfg.get("llm_max_tokens", 2048))}}
     if tools:
         payload["tools"] = tools
     # Serialize requests rather than concurrently loading two models on the RX 580.
@@ -129,7 +129,7 @@ def chat(messages, tools=None, timeout=180, model=None, think=None, on_text=None
               f"generate={seconds('eval_duration'):.2f}s "
               f"input_tokens={body.get('prompt_eval_count', 0)} "
               f"output_tokens={body.get('eval_count', 0)}", flush=True)
-    if body.get("done_reason") == "length":
+    if body.get("done_reason") == "length" and not warmup:
         raise RuntimeError("Model response reached its output limit; increase llm_max_tokens or shorten the request.")
     message = body.get("message")
     if not isinstance(message, dict):

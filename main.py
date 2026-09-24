@@ -1019,7 +1019,7 @@ class JarvisLive:
         parts = [sys_prompt, identity_ctx]
 
         return {"system_instruction": "\n".join(parts), "declarations": _all_decls,
-                "session_context": "\n".join([mem_str, time_ctx])}
+                "session_context": "\n".join([mem_str, time_ctx]), "prewarm_model": True}
 
     async def _execute_tool(self, fc) -> types.FunctionResponse:
         name = fc.name
@@ -1424,7 +1424,10 @@ class JarvisLive:
                         if sc.input_transcription and sc.input_transcription.text:
                             txt = _clean_transcript(sc.input_transcription.text)
                             if txt:
-                                in_buf.append(txt)
+                                if getattr(sc.input_transcription, "finished", False):
+                                    self._record_user_transcript(txt)
+                                else:
+                                    in_buf.append(txt)
                                 self._last_user_speech = time.monotonic()
 
                         if sc.turn_complete:
@@ -1442,15 +1445,7 @@ class JarvisLive:
 
                             full_in = " ".join(in_buf).strip()
                             if full_in:
-                                self._last_out_logged = ""   # new exchange
-                                self.ui.write_log(f"You: {full_in}")
-                                self._session_log.append(f"User: {full_in}")
-                                if self._dashboard:
-                                    asyncio.create_task(self._dashboard.broadcast({
-                                        "type": "log", "speaker": "user",
-                                        "text": full_in,
-                                        "ts": datetime.now().isoformat(),
-                                    }))
+                                self._record_user_transcript(full_in)
                             in_buf = []
 
                             full_out = " ".join(out_buf).strip()
@@ -1631,6 +1626,16 @@ class JarvisLive:
             stream.stop()
             stream.close()
 
+    def _record_user_transcript(self, text):
+        self._last_out_logged = ""
+        self.ui.write_log(f"You: {text}")
+        self._session_log.append(f"User: {text}")
+        if self._dashboard:
+            asyncio.create_task(self._dashboard.broadcast({
+                "type": "log", "speaker": "user", "text": text,
+                "ts": datetime.now().isoformat(),
+            }))
+
     # ── Morning briefing ────────────────────────────────────────────────────────
 
     async def _send_startup_briefing(self) -> None:
@@ -1745,6 +1750,17 @@ class JarvisLive:
                     # Show on UI content panel immediately
                     self.ui.show_content("NEWS — top world news today", news_text)
 
+                # Automatic news must not consume a model turn ahead of the
+                # user's first question. Spoken briefings remain opt-in.
+                from core.home_llm import load_config
+                if not load_config().get("startup_news_spoken", False):
+                    if last:
+                        self.ui.write_log(f"SYS: Last session: {last.get('summary', '')}")
+                    if failed:
+                        self.ui.write_log("SYS: Startup news unavailable.")
+                    return
+
+                if not failed:
                     p2 = (
                         f"[BRIEFING] Here are today's top news headlines:\n{news_text}\n\n"
                         "Pick ONE headline, summarise it in one sentence, then say the full list "

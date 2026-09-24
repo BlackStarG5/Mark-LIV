@@ -11,6 +11,7 @@ import threading
 import sys
 import time
 from pathlib import Path
+from collections import OrderedDict
 from types import SimpleNamespace as NS
 
 import numpy as np
@@ -24,13 +25,15 @@ VOICE_STYLE = (
     "Do not repeat the question, your previous answer, greetings, or tool progress announcements. "
     "Avoid routine offers of further help and repeated uses of sir. "
     "After a tool result, give the useful result once; do not restate your plan."
+    " For a simple factual question, a short direct answer is enough: "
+    "'What is the capital of Japan?' -> 'Tokyo.' Never add a routine follow-up question."
 )
 
 
 def event(text=None, heard=None, audio=None, done=False, calls=None):
     return NS(data=audio, tool_call=NS(function_calls=calls) if calls else None,
               server_content=NS(output_transcription=NS(text=text) if text else None,
-                                input_transcription=NS(text=heard) if heard else None,
+                                input_transcription=NS(text=heard, finished=True) if heard else None,
                                 turn_complete=done))
 
 
@@ -40,6 +43,7 @@ class LocalSpeech:
         self.stt = None
         self.tts = None
         self.pipelines = {}
+        self._pcm_cache = OrderedDict()
         self._voice_lock = threading.Lock()
 
     def transcribe(self, pcm):
@@ -52,19 +56,29 @@ class LocalSpeech:
             beam_size=1, vad_filter=True, condition_on_previous_text=False)
         return " ".join(s.text for s in segments).strip()
 
-    def synthesize(self, text):
+    def synthesize(self, text, voice=None):
         # Cancellation cannot stop an already-running CPU inference. Serialize
         # the next sentence until it finishes rather than re-entering PyTorch.
         with self._voice_lock:
-            return self._synthesize(text)
+            from memory.config_manager import get_voice
+            voice = voice or get_voice()
+            key = (voice, text)
+            if key in self._pcm_cache:
+                self._pcm_cache.move_to_end(key)
+                return self._pcm_cache[key]
+            pcm = self._synthesize(text, voice)
+            # Small RAM-only cache: repeated short replies need no inference.
+            if pcm and len(pcm) <= 480000:
+                self._pcm_cache[key] = pcm
+                if len(self._pcm_cache) > 24:
+                    self._pcm_cache.popitem(last=False)
+            return pcm
 
-    def _synthesize(self, text):
-        from memory.config_manager import get_voice
-        voice = get_voice()
+    def _synthesize(self, text, voice):
         lang = "b" if voice.startswith("b") else "a"
         if self.tts is None:
             import torch
-            torch.set_num_threads(4)
+            torch.set_num_threads(int(home_llm.load_config().get("tts_threads", 8)))
             from kokoro import KPipeline
             self.tts = KPipeline(lang_code=lang, device="cpu", repo_id="hexgrad/Kokoro-82M")
             self.pipelines[lang] = self.tts
@@ -83,12 +97,13 @@ class LocalSpeech:
     def startup_audio(self):
         """Only this fixed, non-personal greeting is cached on disk."""
         from memory.config_manager import get_voice
-        path = Path(__file__).resolve().parent.parent / "voice-samples" / f"startup-v1-{get_voice()}.pcm"
+        voice = get_voice()
+        path = Path(__file__).resolve().parent.parent / "voice-samples" / f"startup-v1-{voice}.pcm"
         if path.exists():
             pcm = path.read_bytes()
             if pcm and len(pcm) % 2 == 0:
                 return pcm
-        pcm = self.synthesize(STARTUP_GREETING)
+        pcm = self.synthesize(STARTUP_GREETING, voice)
         if pcm:
             path.parent.mkdir(exist_ok=True)
             temp = path.with_suffix(".tmp")
@@ -116,6 +131,8 @@ class LocalSession:
         self.cancelled = False
         self.active = None
         self.voice_error = None
+        self._response_started = None
+        self._first_audio_pending = False
         self.tools = home_llm.tool_specs(config["declarations"])
         self.allowed = {t["function"]["name"] for t in self.tools}
         self.schemas = {t["function"]["name"]: t["function"].get("parameters", {}) for t in self.tools}
@@ -126,6 +143,16 @@ class LocalSession:
         except Exception as exc:
             self.log(f"SYS: Voice warm-up unavailable: {exc}")
 
+    async def _warm_model(self):
+        # Prepare the expensive stable instruction/tool prefix while the cached
+        # greeting plays. Discard the single output token; never execute tools.
+        try:
+            await asyncio.to_thread(home_llm.chat,
+                [{"role": "system", "content": self.config["system_instruction"] + "\n\n" + VOICE_STYLE}],
+                self.tools, think=False, warmup=True)
+        except Exception as exc:
+            print(f"[Warmup] Model preparation skipped: {exc}", flush=True)
+
     async def __aenter__(self):
         available = await asyncio.to_thread(home_llm.models)
         _, model = home_llm.settings()
@@ -134,6 +161,8 @@ class LocalSession:
         self.tasks = [asyncio.create_task(self._worker()), asyncio.create_task(self._audio_worker())]
         if hasattr(self.speech, "warmup"):
             self.tasks.append(asyncio.create_task(self._warm_voice()))
+        if self.config.get("prewarm_model", False):
+            self.tasks.append(asyncio.create_task(self._warm_model()))
         return self
 
     async def __aexit__(self, *args):
@@ -297,6 +326,8 @@ class LocalSession:
         chunks = asyncio.Queue()
         stopped = threading.Event()
         started = time.perf_counter()
+        self._response_started = started
+        self._first_audio_pending = True
 
         def on_text(text):
             if not stopped.is_set():
@@ -326,7 +357,7 @@ class LocalSession:
                     sentence, pending = pending[:match.start()], pending[match.end():]
                     if sentence.strip():
                         if first:
-                            self.log(f"[TIMING] First sentence: {time.perf_counter() - started:.2f}s")
+                            print(f"[TIMING] First sentence: {time.perf_counter() - started:.2f}s", flush=True)
                             first = False
                         await self._speak_text(sentence)
             msg = await task
@@ -334,7 +365,7 @@ class LocalSession:
                 pending = msg.get("content", "")
             if pending.strip():
                 await self._speak_text(pending)
-            self.log(f"[TIMING] Response and speech generation: {time.perf_counter() - started:.2f}s")
+            print(f"[TIMING] Response and speech generation: {time.perf_counter() - started:.2f}s", flush=True)
             return msg
         finally:
             stopped.set()
@@ -352,6 +383,9 @@ class LocalSession:
                 pcm = await asyncio.to_thread(self.speech.synthesize, sentence)
                 if pcm:
                     await self.events.put(event(audio=pcm))
+                    if self._first_audio_pending and self._response_started is not None:
+                        print(f"[TIMING] First audio ready: {time.perf_counter() - self._response_started:.2f}s", flush=True)
+                        self._first_audio_pending = False
             except Exception as exc:
                 self.voice_error = str(exc)
                 requirements = Path(__file__).resolve().parent.parent / "requirements.txt"
