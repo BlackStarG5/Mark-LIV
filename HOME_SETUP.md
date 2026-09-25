@@ -79,6 +79,20 @@ not fall back to opening a webpage. US locations default to Fahrenheit.
 
 ## Configuration
 
+Speech recognition defaults to Whisper `small` with `stt_beam_size: 3` for better
+accuracy than the previous `base`/beam-1 setup. It runs locally on CPU and loads
+in the background when connecting. This trades some recognition time and RAM
+for accuracy. Existing explicit `stt_model` preferences remain respected.
+`stt_vocabulary` accepts a short list of names or technical terms as spelling
+hints. These do not forcibly replace recognized words. `stt_language` can be a
+language code such as `en`; omit it for automatic language detection.
+
+The audio buffer retains 250 ms before speech crosses the volume threshold to
+preserve quiet opening sounds. The mic is still gated while the assistant is
+speaking to avoid feedback: click Interrupt and wait for playback to stop before
+speaking. These settings cannot guarantee recognition of unfamiliar names in
+room noise; test with your own microphone after restarting.
+
 See `config/home.example.json`. Merge settings into `config/api_keys.json`;
 preserve existing plugin credentials and preferences. Never commit that file.
 `HOMEAI_OLLAMA_URL` overrides the URL. For an authenticated proxy, set

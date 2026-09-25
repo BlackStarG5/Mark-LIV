@@ -27,6 +27,10 @@ VOICE_STYLE = (
     "After a tool result, give the useful result once; do not restate your plan."
     " For a simple factual question, a short direct answer is enough: "
     "'What is the capital of Japan?' -> 'Tokyo.' Never add a routine follow-up question."
+    " Microphone transcripts can misspell proper names. For an unfamiliar name, "
+    "use web_search when appropriate or ask one short clarification. Do not claim "
+    "it is fictional or nonexistent just because you do not recognize its spelling. "
+    "If you infer a different name, make that interpretation explicit."
 )
 
 
@@ -45,16 +49,35 @@ class LocalSpeech:
         self.pipelines = {}
         self._pcm_cache = OrderedDict()
         self._voice_lock = threading.Lock()
+        self._stt_lock = threading.Lock()
 
-    def transcribe(self, pcm):
+    def _prepare_stt(self, cfg):
         if self.stt is None:
             from faster_whisper import WhisperModel
+            self.stt = WhisperModel(cfg.get("stt_model", "small"), device="cpu", compute_type="int8", cpu_threads=8)
+
+    def prepare_stt(self):
+        with self._stt_lock:
+            self._prepare_stt(home_llm.load_config())
+
+    def transcribe(self, pcm):
+        with self._stt_lock:
             cfg = home_llm.load_config()
-            self.stt = WhisperModel(cfg.get("stt_model", "base"), device="cpu", compute_type="int8")
-        segments, _ = self.stt.transcribe(
-            np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768,
-            beam_size=1, vad_filter=True, condition_on_previous_text=False)
-        return " ".join(s.text for s in segments).strip()
+            self._prepare_stt(cfg)
+            vocabulary = cfg.get("stt_vocabulary", [])
+            if not isinstance(vocabulary, list):
+                vocabulary = []
+            hints = ", ".join(str(word) for word in vocabulary)[:500]
+            started = time.perf_counter()
+            segments, _ = self.stt.transcribe(
+                np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768,
+                beam_size=int(cfg.get("stt_beam_size", 3)), temperature=0,
+                language=cfg.get("stt_language") or None,
+                hotwords=hints or None, vad_filter=True,
+                vad_parameters={"speech_pad_ms": 300}, condition_on_previous_text=False)
+            text = " ".join(s.text for s in segments).strip()
+            print(f"[TIMING] Speech recognition: {time.perf_counter() - started:.2f}s", flush=True)
+            return text
 
     def synthesize(self, text, voice=None):
         # Cancellation cannot stop an already-running CPU inference. Serialize
@@ -143,6 +166,12 @@ class LocalSession:
         except Exception as exc:
             self.log(f"SYS: Voice warm-up unavailable: {exc}")
 
+    async def _warm_stt(self):
+        try:
+            await asyncio.to_thread(self.speech.prepare_stt)
+        except Exception as exc:
+            self.log(f"SYS: Speech recognition preparation failed: {exc}")
+
     async def _warm_model(self):
         # Prepare the expensive stable instruction/tool prefix while the cached
         # greeting plays. Discard the single output token; never execute tools.
@@ -161,6 +190,8 @@ class LocalSession:
         self.tasks = [asyncio.create_task(self._worker()), asyncio.create_task(self._audio_worker())]
         if hasattr(self.speech, "warmup"):
             self.tasks.append(asyncio.create_task(self._warm_voice()))
+        if hasattr(self.speech, "prepare_stt"):
+            self.tasks.append(asyncio.create_task(self._warm_stt()))
         if self.config.get("prewarm_model", False):
             self.tasks.append(asyncio.create_task(self._warm_model()))
         return self
@@ -210,6 +241,7 @@ class LocalSession:
 
     async def _audio_worker(self):
         frames = []
+        pre_roll = b""
         silence = 0.0
         duration = 0.0
         cfg = home_llm.load_config()
@@ -224,12 +256,20 @@ class LocalSession:
             loud = bool(len(arr)) and float(np.sqrt(np.mean(arr * arr))) > float(cfg.get("speech_threshold", 250))
             if loud:
                 silence = 0
+                if not frames and pre_roll:
+                    frames.append(pre_roll)
+                    duration += len(pre_roll) / 32000
+                    pre_roll = b""
                 frames.append(chunk)
                 duration += seconds
             elif frames:
                 frames.append(chunk)
                 duration += seconds
                 silence += seconds
+            else:
+                # Keep 250 ms before the volume threshold is crossed, including
+                # quiet opening consonants that would otherwise be discarded.
+                pre_roll = (pre_roll + chunk)[-8000:]
             # Timeout flush also closes an utterance when push-to-talk is released.
             if frames and (silence >= silence_limit or duration >= 25):
                 pcm = b"".join(frames)

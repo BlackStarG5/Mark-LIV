@@ -9,7 +9,7 @@ def main():
     speech = LocalSpeech()
     from faster_whisper import WhisperModel
     from core.home_llm import load_config
-    WhisperModel(load_config().get("stt_model", "base"), device="cpu", compute_type="int8")
+    WhisperModel(load_config().get("stt_model", "small"), device="cpu", compute_type="int8")
     folder = Path(__file__).resolve().parent / "voice-samples"
     folder.mkdir(exist_ok=True)
     from unittest.mock import patch
