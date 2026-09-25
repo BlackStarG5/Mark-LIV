@@ -150,7 +150,8 @@ def _detect_intent(description: str, file_path: str, code: str) -> str:
                 "  optimize     = refactor / clean up / speed up existing code\n\n"
                 "Reply with ONLY the intent word, nothing else."
             )
-            ans = _get_gemini().generate_content(prompt).text.strip().lower()
+            from core import home_llm
+            ans = home_llm.chat([{ "role": "user", "content": prompt}], think=False, max_tokens=16, timeout=15).get("content", "").strip().lower()
             ans = ans.strip("`'\". \n")
             if ans in _VALID_INTENTS:
                 return ans
@@ -234,6 +235,8 @@ def _run_file(path: Path, args: list, timeout: int) -> str:
         parts  = []
         if output: parts.append(f"Output:\n{output}")
         if error:  parts.append(f"Stderr:\n{error}")
+        if result.returncode != 0:
+            parts.insert(0, f"Execution failed with exit code {result.returncode}.")
         return "\n\n".join(parts) if parts else "Executed with no output."
 
     except subprocess.TimeoutExpired:
@@ -594,7 +597,7 @@ TOOL = {
         "properties": {
             "action": {
                 "type": "STRING",
-                "description": "write | edit | explain | run | build | auto (default: auto)"
+                "description": "write | edit | explain | run | build | optimize | screen_debug | auto. Prefer an explicit action to avoid a second classification call."
             },
             "description": {
                 "type": "STRING",

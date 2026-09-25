@@ -157,6 +157,7 @@ class LocalSession:
         self._response_started = None
         self._first_audio_pending = False
         self.tools = home_llm.tool_specs(config["declarations"])
+        self.turn_tools = self.tools
         self.allowed = {t["function"]["name"] for t in self.tools}
         self.schemas = {t["function"]["name"]: t["function"].get("parameters", {}) for t in self.tools}
 
@@ -313,11 +314,18 @@ class LocalSession:
                 self.log(f"ERR: Startup voice failed: {exc}")
             self.history.append({"role": "assistant", "content": STARTUP_GREETING})
             return
+        self._response_started = time.perf_counter()
+        self._first_audio_pending = True
         # Work on a copy: a failed/cancelled turn must not leave dangling tool calls.
         history = copy.deepcopy(self.history)
         content = "\n".join(p.get("text", "") for p in parts)
         if any(p.get("inline_data") for p in parts):
             content += "\n[Vision observation]\n" + await asyncio.to_thread(home_llm.describe_images, parts)
+        if self.config.get("adaptive_tools"):
+            from core.tool_catalog import select_tools
+            selected = await asyncio.to_thread(select_tools, content, history, self.config["declarations"])
+            self.turn_tools = [t for t in self.tools if t["function"]["name"] in selected]
+            print(f"[Routing] {', '.join(sorted(selected)) or 'conversation (no tools)'}", flush=True)
         history.append({"role": "user", "content": content})
         self._trim(history)
         for _ in range(int(home_llm.load_config().get("max_tool_rounds", 12))):
@@ -375,7 +383,7 @@ class LocalSession:
 
         async def generate():
             try:
-                return await asyncio.to_thread(home_llm.chat, messages, self.tools,
+                return await asyncio.to_thread(home_llm.chat, messages, self.turn_tools,
                                                on_text=on_text, cancelled=stopped)
             finally:
                 await chunks.put(None)

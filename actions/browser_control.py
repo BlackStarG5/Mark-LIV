@@ -484,7 +484,11 @@ class _BrowserSession:
         if not self._loop:
             raise RuntimeError(f"Session for '{self.browser_name}' not started.")
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result(timeout=timeout)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            raise
 
     def close(self):
         if self._loop:
@@ -963,7 +967,7 @@ def browser_control(
     # opens here. The only exception: if an automation flow is already running,
     # navigation continues in that window (so multi-step tasks aren't split).
     if action in ("go_to", "search", "new_tab"):
-        if _registry.has(browser):
+        if _registry.has(browser) or params.get("automation"):
             sess = _registry.get(browser)
             try:
                 if action == "search":
@@ -1090,6 +1094,11 @@ TOOL = {
             "selector": {
                 "type": "STRING",
                 "description": "CSS selector for click/type"
+            },
+            "fields": {
+                "type": "OBJECT",
+                "additionalProperties": {"type": "STRING"},
+                "description": "For fill_form: map CSS selectors to values"
             },
             "text": {
                 "type": "STRING",

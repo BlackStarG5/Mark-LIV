@@ -482,16 +482,16 @@ def find_files(name: str = "", extension: str = "",
 
         if not results:
             query = name or extension or "files"
-            return f"No {query} found in {search_path.name}/"
+            return f"No {query} found in scanned portion of {search_path.name}/" + (" (500-directory limit reached)." if dir_count > max_dirs else "")
 
-        return f"Found {len(results)} file(s):\n" + "\n".join(results)
+        return f"Found {len(results)} file(s) in bounded scan (up to {max_dirs} directories/{max_results} results):\n" + "\n".join(results)
 
     except Exception as e:
         return f"Search error: {e}"
 
 
 def get_largest_files(path: str = "downloads", count: int = 10) -> str:
-    count = min(count, 50)  # maksimum 50
+    count = max(1, min(count, 50))  # maksimum 50
     try:
         search_path = _resolve_path(path)
         if not _is_safe_path(search_path):
@@ -499,21 +499,29 @@ def get_largest_files(path: str = "downloads", count: int = 10) -> str:
         if not search_path.exists():
             return f"Path not found: {path}"
 
+        import heapq
+        import time
         files = []
-        for item in search_path.rglob("*"):
+        partial = False
+        started = time.monotonic()
+        for scanned, item in enumerate(search_path.rglob("*")):
+            if scanned >= 20000 or time.monotonic() - started > 5:
+                partial = True
+                break
             if item.is_file():
                 try:
-                    files.append((item.stat().st_size, item))
-                except Exception:
+                    entry = (item.stat().st_size, str(item))
+                    heapq.heappush(files, entry)
+                    if len(files) > count:
+                        heapq.heappop(files)
+                except OSError:
                     continue
-
-        files.sort(reverse=True)
-        top = files[:count]
+        top = [(size, Path(name)) for size, name in sorted(files, reverse=True)]
 
         if not top:
             return "No files found."
 
-        lines = [f"Top {len(top)} largest files in {search_path.name}/:"]
+        lines = [f"Top {len(top)} largest files in {search_path.name}/:" + (" PARTIAL scan: time/item limit reached." if partial else "")]
         for size, f in top:
             lines.append(f"  {_format_size(size):>10}  {f.name}  ({f.parent})")
 

@@ -67,7 +67,8 @@ def identity_instruction(model=None):
     )
 
 
-def chat(messages, tools=None, timeout=180, model=None, think=None, on_text=None, cancelled=None, warmup=False):
+def chat(messages, tools=None, timeout=180, model=None, think=None, on_text=None, cancelled=None, warmup=False,
+         max_tokens=None, format_schema=None):
     cfg = load_config()
     url, default = settings()
     messages = [dict(message) for message in messages]
@@ -80,7 +81,9 @@ def chat(messages, tools=None, timeout=180, model=None, think=None, on_text=None
                "think": cfg.get("thinking_enabled", False) if think is None else think,
                "keep_alive": cfg.get("llm_keep_alive", "30m"),
                "options": {"num_ctx": int(cfg.get("llm_context", 16384)),
-                           "num_predict": 1 if warmup else int(cfg.get("llm_max_tokens", 2048))}}
+                           "num_predict": 1 if warmup else int(max_tokens or cfg.get("llm_max_tokens", 2048))}}
+    if format_schema is not None:
+        payload["format"] = format_schema
     if tools:
         payload["tools"] = tools
     # Serialize requests rather than concurrently loading two models on the RX 580.

@@ -1016,10 +1016,14 @@ class JarvisLive:
 
         # Qwen inserts tool schemas after the system message. Keep changing
         # context in a separate message AFTER that stable, expensive prefix.
-        parts = [sys_prompt, identity_ctx]
+        from core.tool_catalog import compact_prompt
+        from core.home_llm import load_config
+        compact = load_config().get("compact_tool_prompt", True)
+        parts = [compact_prompt(self._asst_name, _platform.system(), _all_decls) if compact else sys_prompt, identity_ctx]
 
         return {"system_instruction": "\n".join(parts), "declarations": _all_decls,
-                "session_context": "\n".join([mem_str, time_ctx]), "prewarm_model": True}
+                "session_context": "\n".join([mem_str, time_ctx]), "adaptive_tools": True,
+                "prewarm_model": False}
 
     async def _execute_tool(self, fc) -> types.FunctionResponse:
         name = fc.name
@@ -1033,6 +1037,8 @@ class JarvisLive:
             category = args.get("category", "notes")
             key      = args.get("key", "")
             value    = args.get("value", "")
+            if not str(key).strip() or not str(value).strip():
+                return types.FunctionResponse(id=fc.id, name=name, response={"result": "Memory not saved: key and value must be nonempty."})
             if key and value:
                 update_memory({category: {key: {"value": value}}})
                 print(f"[Memory] 💾 save_memory: {category}/{key} = {value}")
@@ -1141,7 +1147,7 @@ class JarvisLive:
                 # file_processor: fall back to the currently-uploaded file when none is given
                 if name == "file_processor" and not args.get("file_path") and self.ui.current_file:
                     args["file_path"] = self.ui.current_file
-                _ctx = {"player": self.ui, "speak": self.speak,
+                _ctx = {"player": self.ui, "speak": self._tool_progress,
                         "response": None, "session_memory": None}
                 r = await loop.run_in_executor(None, lambda: self._action_registry.run(name, args, _ctx))
                 result = r or "Done."
@@ -1165,9 +1171,11 @@ class JarvisLive:
                     result = f"Unknown tool: {name}"
 
         except Exception as e:
+            if name == "screen_process":
+                self._vision_busy = False
             result = f"Tool '{name}' failed: {e}"
             traceback.print_exc()
-            self.speak_error(name, e)
+            self.ui.write_log(f"ERR: {name}: {e}")
 
         if not self.ui.muted:
             self.ui.set_state("LISTENING")
@@ -1635,6 +1643,11 @@ class JarvisLive:
                 "type": "log", "speaker": "user", "text": text,
                 "ts": datetime.now().isoformat(),
             }))
+
+    def _tool_progress(self, text):
+        # Tool callbacks are progress, not new user prompts. Queuing them into
+        # the model caused duplicate answers and sometimes duplicate actions.
+        self.ui.write_log(f"SYS: {text}")
 
     # ── Morning briefing ────────────────────────────────────────────────────────
 

@@ -476,7 +476,7 @@ def computer_control(
 
         if action == "wait":
             secs = float(params.get("seconds", 1.0))
-            secs = min(secs, 30.0)
+            secs = max(0.0, min(secs, 30.0))
             time.sleep(secs)
             return f"Waited {secs}s"
 

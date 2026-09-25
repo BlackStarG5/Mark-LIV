@@ -551,7 +551,7 @@ def _update_steam_games(steam_path: Path, game_name: str = None) -> str:
     if update_started:
         names  = ", ".join(update_started[:3])
         suffix = f" and {len(update_started) - 3} more" if len(update_started) > 3 else ""
-        parts.append(f"Update started for: {names}{suffix}.")
+        parts.append(f"Update requested for: {names}{suffix}. Completion is not yet verified.")
     if already_running:
         parts.append(f"Already updating: {', '.join(already_running)}.")
     if already_updated:
@@ -1062,7 +1062,7 @@ if __name__ == "__main__":
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "game_updater",
-    "description": "THE ONLY tool for ANY Steam or Epic Games request. Use for: installing, downloading, updating games, listing installed games, checking download status, scheduling updates. ALWAYS call directly for any Steam/Epic/game request. NEVER use browser_control or web_search for Steam/Epic.",
+    "description": "Manage Steam/Epic installations, updates, installed-game lists, download status, and update schedules. Not for game facts, guides, or Pokemon questions.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
@@ -1095,7 +1095,7 @@ TOOL = {
                 "description": "Shut down PC when download finishes"
             }
         },
-        "required": []
+        "required": ["action"]
     },
     "handler": game_updater,
 }

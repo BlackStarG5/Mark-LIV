@@ -122,8 +122,7 @@ def check_all() -> list[str]:
         try:
             results = _ddg_news(topic, max_results=5)
             if not results:
-                monitors[slug]["last_check"] = today
-                changed = True
+                # A transient lookup failure must not suppress checks all day.
                 continue
 
             top   = results[0]

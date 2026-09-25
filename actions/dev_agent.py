@@ -94,7 +94,10 @@ def _has_error(output: str, run_command: str) -> bool:
     low = output.lower()
 
     if "timed out" in low:
-        return False
+        return True
+    exit_status = re.search(r"exit code:\s*(-?\d+)", low)
+    if exit_status and int(exit_status.group(1)) != 0:
+        return True
 
     if not output.strip():
         return False
@@ -227,7 +230,8 @@ Code for {file_path}:"""
         response = model.generate_content(prompt)
         code = _strip_fences(response.text)
 
-        full_path = project_dir / file_path
+        from core.file_safety import child_path
+        full_path = child_path(project_dir, file_path)
         full_path.parent.mkdir(parents=True, exist_ok=True)
         full_path.write_text(code, encoding="utf-8")
 
@@ -298,7 +302,9 @@ def _open_vscode(project_dir: Path) -> bool:
 def _run_project(run_command: str, project_dir: Path, timeout: int = 30) -> str:
     print(f"[DevAgent] 🚀 Running: {run_command}")
     try:
-        parts = run_command.split()
+        import shlex
+        parts = shlex.split(run_command, posix=False)
+        parts = [p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in (chr(34), chr(39)) else p for p in parts]
         if parts[0].lower() == "python":
             parts[0] = sys.executable
 
@@ -313,7 +319,7 @@ def _run_project(run_command: str, project_dir: Path, timeout: int = 30) -> str:
         stdout = result.stdout.strip()
         stderr = result.stderr.strip()
 
-        combined_parts = []
+        combined_parts = [f"Exit code: {result.returncode}"]
         if stdout:
             combined_parts.append(f"STDOUT:\n{stdout}")
         if stderr:
@@ -322,7 +328,7 @@ def _run_project(run_command: str, project_dir: Path, timeout: int = 30) -> str:
         return "\n\n".join(combined_parts) if combined_parts else "Ran with no output."
 
     except subprocess.TimeoutExpired:
-        return f"Timed out after {timeout}s — long-running app (server/GUI) is likely working."
+        return f"Timed out after {timeout}s — process stopped; successful execution is not verified."
     except FileNotFoundError as e:
         return f"Command not found: {e}"
     except Exception as e:
@@ -425,7 +431,8 @@ Fixed code for {fix_path}:"""
             response = model.generate_content(prompt)
             fixed = _strip_fences(response.text)
 
-            full_path = project_dir / fix_path
+            from core.file_safety import child_path
+            full_path = child_path(project_dir, fix_path)
             full_path.parent.mkdir(parents=True, exist_ok=True)
             full_path.write_text(fixed, encoding="utf-8")
 

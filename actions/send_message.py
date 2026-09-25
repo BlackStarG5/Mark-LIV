@@ -117,7 +117,8 @@ def _open_app(app_name: str) -> bool:
 def _open_browser_url(url: str) -> bool:
     import webbrowser
     try:
-        webbrowser.open(url)
+        if not webbrowser.open(url):
+            return False
         time.sleep(4.0) 
         return True
     except Exception as e:
@@ -147,7 +148,7 @@ def _desktop_send(app_name: str, receiver: str, message: str) -> str:
     time.sleep(0.2)
     pyautogui.press("enter")
     time.sleep(0.3)
-    return f"Message sent to {receiver} via {app_name}."
+    return f"Send keystroke submitted for {receiver} via {app_name}; recipient and delivery are not verified. Check the conversation in the app."
 
 def _send_whatsapp(receiver: str, message: str) -> str:
     return _desktop_send("WhatsApp", receiver, message)
@@ -188,7 +189,7 @@ def _send_instagram(receiver: str, message: str) -> str:
     pyautogui.press("enter")
     time.sleep(0.3)
 
-    return f"Message sent to {receiver} via Instagram."
+    return f"Send keystroke submitted for {receiver} via Instagram; recipient and delivery are not verified. Check the conversation in the app."
 
 
 def _send_messenger(receiver: str, message: str) -> str:
@@ -210,7 +211,7 @@ def _send_messenger(receiver: str, message: str) -> str:
     pyautogui.press("enter")
     time.sleep(0.3)
 
-    return f"Message sent to {receiver} via Messenger."
+    return f"Send keystroke submitted for {receiver} via Messenger; recipient and delivery are not verified. Check the conversation in the app."
 
 _PLATFORM_MAP = [
     ({"whatsapp", "wp", "wapp"},              _send_whatsapp),

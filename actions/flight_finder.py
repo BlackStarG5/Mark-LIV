@@ -39,50 +39,16 @@ _RELATIVE_MAP_KEYS = {
 
 def _parse_date(raw: str) -> str:
 
-    raw   = raw.strip()
-    lower = raw.lower()
+    raw = raw.strip()
     today = datetime.now()
-
-    if re.match(r"\d{4}-\d{2}-\d{2}", raw):
-        return raw
-    for fmt in ("%d/%m/%Y", "%m/%d/%Y", "%d.%m.%Y", "%d-%m-%Y"):
+    if raw.lower() in ("today", "tomorrow"):
+        return (today + timedelta(days=raw.lower() == "tomorrow")).strftime("%Y-%m-%d")
+    for fmt in ("%Y-%m-%d", "%B %d, %Y", "%B %d %Y", "%d %B %Y", "%b %d %Y"):
         try:
             return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
         except ValueError:
             pass
-
-    relative = {
-        "today": today,
-        "tomorrow": today + timedelta(days=1),
-    }
-    for key, val in relative.items():
-        if key in lower:
-            return val.strftime("%Y-%m-%d")
-
-    try:
-        from core import gemini
-        result = gemini.text(
-            f"Today is {today.strftime('%Y-%m-%d')}. "
-            f"Convert this date expression to YYYY-MM-DD: '{raw}'. "
-            f"Return ONLY the date string, nothing else.",
-            tier=gemini.FAST,
-        )
-        if re.match(r"\d{4}-\d{2}-\d{2}", result):
-            return result
-    except Exception as e:
-        print(f"[FlightFinder] ⚠️ Gemini date parse failed: {e}")
-
-    for month_name, month_num in _MONTH_MAP.items():
-        if month_name in lower:
-            day_match = re.search(r"\d{1,2}", raw)
-            if day_match:
-                day  = int(day_match.group())
-                year = today.year if month_num >= today.month else today.year + 1
-                return f"{year}-{month_num:02d}-{day:02d}"
-
-    # Last resort: today
-    print(f"[FlightFinder] ⚠️ Could not parse date '{raw}' — using today.")
-    return today.strftime("%Y-%m-%d")
+    raise ValueError("Please provide an unambiguous valid date including the year, such as 2026-10-15.")
 
 _CABIN_CODE: dict[str, str] = {
     "economy":  "1",
@@ -112,7 +78,6 @@ def _build_google_flights_url(
     return (
         f"{base}"
         f"?q={trip}"
-        f"&tfs=CBwQAhoeEgoyMDI1LTAzLTE1agcIARIDSVNUcgcIARIDTEhS"   
         f"&curr=USD"
         f"&cabin={cabin_code}"
         f"&adults={passengers}"
@@ -136,8 +101,7 @@ def _search_flights_browser(
     )
 
     print(f"[FlightFinder] 🌐 Opening: {url}")
-    browser_control({"action": "go_to", "url": url})
-    time.sleep(5)
+    browser_control({"action": "go_to", "url": url, "automation": True})
 
     raw = browser_control({"action": "get_text"})
     return (raw or ""), url
@@ -176,7 +140,9 @@ def _parse_flights_with_gemini(
         )
         text     = re.sub(r"```(?:json)?", "", response.text).strip().rstrip("`").strip()
         flights  = json.loads(text)
-        return flights if isinstance(flights, list) else []
+        return [f for f in flights[:5] if isinstance(f, dict)
+                and isinstance(f.get("airline"), str) and f["airline"].lower() in raw_text.lower()
+                and str(f.get("price", "")).strip() and str(f["price"]) in raw_text] if isinstance(flights, list) else []
     except Exception as e:
         print(f"[FlightFinder] ⚠️ Gemini parse failed: {e}")
         return []
@@ -213,17 +179,7 @@ def _format_spoken(
             f"arriving {arrival}{dur_str}, {stop_str}, {price_str}."
         )
 
-    # Cheapest — strip non-digits for comparison
-    priced = [f for f in flights if f.get("price")]
-    if priced:
-        cheapest = min(
-            priced,
-            key=lambda x: int(re.sub(r"[^\d]", "", str(x["price"])) or "999999"),
-        )
-        lines.append(
-            f"The cheapest option is {cheapest.get('airline')} "
-            f"at {cheapest.get('price')} {cheapest.get('currency', '')}."
-        )
+    lines.append("These are extracted page listings; fares and availability must be verified before booking.")
 
     return " ".join(lines)
 
@@ -313,8 +269,13 @@ def flight_finder(parameters: dict, player=None, speak=None) -> str:
     if cabin not in _CABIN_CODE:
         cabin = "economy"
 
-    date        = _parse_date(date_raw)
-    return_date = _parse_date(return_raw) if return_raw else None
+    try:
+        date = _parse_date(date_raw)
+        return_date = _parse_date(return_raw) if return_raw else None
+        if return_date and return_date < date:
+            return "Return date must be on or after departure."
+    except ValueError as exc:
+        return str(exc)
 
     if player:
         player.write_log(f"[FlightFinder] {origin} → {destination} on {date}")

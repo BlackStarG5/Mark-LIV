@@ -30,6 +30,7 @@ import inspect
 import re
 import sys
 import traceback
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
@@ -101,7 +102,13 @@ class ActionRegistry:
         if rec is None or not rec.valid:
             return f"Action '{name}' is not available."
         try:
-            return _call_handler(rec.handler, parameters, ctx or {}) or "Done."
+            from jsonschema import validate
+            from core.home_llm import normalize_schema
+            validate(parameters, normalize_schema(rec.parameters))
+            started = time.perf_counter()
+            result = _call_handler(rec.handler, parameters, ctx or {})
+            print(f"[ToolTiming] {name}: {time.perf_counter() - started:.2f}s", flush=True)
+            return result if result is not None and result != "" else "Tool returned no result; completion is unverified."
         except Exception as e:
             self._logger(f"Action '{name}' crashed during run(): {e}")
             traceback.print_exc()

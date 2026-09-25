@@ -473,8 +473,7 @@ def desktop_control(
 
         else:
             if action:
-                code = _ask_gemini_for_desktop_action(action)
-                return _execute_generated_code(code, player=player)
+                return f"Unknown desktop action: {action}. Use an explicit supported action."
             return "No action or task specified."
 
     except Exception as e:

@@ -308,7 +308,8 @@ def reminder(
 
     os_name    = _get_os()
     safe_msg   = _sanitise(message)
-    task_name  = f"JARVISReminder_{target_dt.strftime('%Y%m%d_%H%M%S')}"
+    from uuid import uuid4
+    task_name  = f"JARVISReminder_{target_dt.strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}"
 
     try:
         script_path = _write_notify_script(task_name, safe_msg, os_name)
