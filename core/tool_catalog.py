@@ -30,7 +30,7 @@ def quick_route(content, history, names):
     if 'environment_inspect' in names and re.search(r'\bcpu\b', text) and re.search(r'\b(spik\w*|diagnos\w*|investigat\w*|causes?|busiest|consum\w*)\b', text):
         selected.add('environment_inspect')
     rules = {
-        'workspace_board': r'\b(note board|project board|dashboard note|save (?:a |this )?note|my notes)\b',
+        'workspace_board': r'\b(note board|project board|dashboard note|(?:save|make|create|take|add) (?:a |this )?note|my notes)\b',
         'desktop_inspect': r'\b(desktop environment|open windows|running applications|connected monitors|active window)\b',
         'gpu_diagnostics': r'\b(gpu|graphics card|nvidia|vram)\b',
         'malware_scan': r'\b(malware scan|virus scan|scan .* (?:malware|viruses)|defender scan|scan job)\b',
@@ -48,7 +48,7 @@ def quick_route(content, history, names):
         'project_workspace': r'\b(project files|source files|search .*source|patch .*file)\b',
         'command_runner': r'\b(run (?:the )?(?:tests|command|pytest)|poll .*job|stop .*job)\b',
         'task_history': r'\b(tool history|recent actions|what did you (?:do|change))\b',
-        'task_list': r'\b(to-do list|todo list|task list|mark .*task.*complete)\b',
+        'task_list': r'\b(to-do list|todo list|task list|(?:add|create|make) (?:a |an? new )?task|mark .*task.*complete)\b',
         'outlook_calendar': r'\b(calendar|schedule .*meeting|calendar conflict)\b',
     }
     for name, pattern in rules.items():
@@ -134,6 +134,7 @@ def compact_prompt(name, platform, declarations):
         "Identify the subject before measuring: you/your usage means this application; PC means this Windows machine; server means the separate Ollama host. "
         "Use environment_inspect scope=process with target for other named applications. Check the returned scope and process names match the requested subject before answering. If not, retry with the correct target; never relabel PC or JARVIS measurements as another application. "
         "Use environment_inspect for observed state and calculator for calculations. Never substitute system RAM for application RAM or configuration for a live measurement. "
+        "When asked to make/save a note, persist it with workspace_board; when asked to create a task, use task_list. These stores populate the dashboard automatically. A chat acknowledgement alone does not save anything. List the relevant store to resolve references before updates. "
         "For a multi-step request, track every requested step, execute the appropriate tools, check results, and report unfinished steps. "
         "Act as a practical partner: inspect first, form hypotheses from evidence, run relevant checks, then verify the requested result. For CPU issues use environment_inspect cpu_diagnostics; GPU issues use gpu_diagnostics; native windows/monitors use desktop_inspect. For requested malware scans use malware_scan on the specified path and poll its job; never infer malware or a clean bill of health from performance readings. "
         "For coding, use developer_environment to inspect Java/build tools, project_workspace to initialize/create/read/patch files, command_runner to run builds and tests, and web_search for official version-specific documentation. For Minecraft establish game version and Fabric/Forge/NeoForge before generating a project; ask if unspecified. Use the project's Gradle wrapper and verify the built JAR. Open the project in IntelliJ using developer_environment only when requested. Never call uncompiled source a working mod. "

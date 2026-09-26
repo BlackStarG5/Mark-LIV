@@ -35,8 +35,8 @@ def mount(window, root, old_body):
         b=QPushButton(text);b.setCursor(Qt.CursorShape.PointingHandCursor);b.clicked.connect(callback);parent.addWidget(b);return b
     button('Command center',lambda: window._workspace_tabs.setCurrentIndex(0))
     button('Reactor / face',lambda: window._toggle_hud_style())
-    button('Notes && projects',lambda: window._workspace_tabs.setCurrentIndex(0))
-    button('Activity console',lambda: window._workspace_tabs.setCurrentIndex(1))
+    button('Notes',lambda: window._workspace_tabs.setCurrentIndex(0))
+    button('Activity console',lambda: right_tabs.setCurrentIndex(2))
     button('Attachments',lambda: right_tabs.setCurrentIndex(1))
     button('Settings',lambda: window._toggle_drawer(not window._quick_drawer.isVisible()))
     nav.addStretch()
@@ -54,6 +54,7 @@ def mount(window, root, old_body):
     right_tabs.addTab(window._log,'Conversation')
     attachments=QWidget();av=QVBoxLayout(attachments);av.addWidget(window._drop_zone);av.addWidget(window._file_hint);av.addStretch()
     right_tabs.addTab(attachments,'Files')
+    right_tabs.addTab(window._console,'Activity Console')
     conversation,cv=card('Conversation & context',right_tabs)
     conversation.setMinimumWidth(300)
     grid.addWidget(conversation,0,1)
@@ -64,11 +65,11 @@ def mount(window, root, old_body):
         from actions.task_list import task_list
         try:
             rows=json.loads(task_list({'action':'list'}))['tasks'];tasks.clear()
-            for row in rows: tasks.addItem(row['title'] + ('  ·  '+row['due'] if row['due'] else ''))
+            for row in rows: tasks.addItem('•  ' + row['title'] + ('  ·  '+row['due'] if row['due'] else ''))
             if not rows: tasks.addItem('No open tasks. Ask JARVIS to add one.')
         except Exception: tasks.clear();tasks.addItem('Task list unavailable')
     window._dashboard_task_timer=QTimer(window);window._dashboard_task_timer.timeout.connect(refresh_tasks);window._dashboard_task_timer.start(5000);refresh_tasks()
-    button('+  Draft a task',lambda: (window._input.setText('Add a task: '),window._input.setFocus()),tv)
+    tv.addWidget(QLabel('Ask JARVIS to create or complete a task.'))
     grid.addWidget(taskcard,1,1)
 
     telemetry,tl=card('System telemetry · live readings')
