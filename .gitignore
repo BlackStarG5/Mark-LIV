@@ -6,6 +6,7 @@
 
 # ── Secrets. Committing any of these publishes them. ──────────────────────────
 config/api_keys.json
+config/outlook-cache.*
 config/certs/
 config/whatsapp_web/
                               # somebody your WhatsApp account, not just a key
@@ -49,5 +50,6 @@ logs/
 downloads/
 screenshots/
 .tmp/
+.tools/
 models/
 voice-samples/

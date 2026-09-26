@@ -151,6 +151,10 @@ def _recursive_update(target: dict, updates: dict) -> bool:
             entry    = {"value": new_val, "updated": datetime.now().strftime("%Y-%m-%d")}
             existing = target.get(key, {})
             if not isinstance(existing, dict) or existing.get("value") != new_val:
+                entry["updated_at"] = datetime.now().isoformat(timespec="seconds")
+                entry["source"] = value.get("source", "memory_update") if isinstance(value, dict) else "memory_update"
+                if isinstance(existing, dict) and existing.get("value"):
+                    entry["previous_value"] = existing["value"]
                 target[key] = entry
                 changed = True
     return changed

@@ -128,6 +128,8 @@ class LocalSpeech:
                 raise RuntimeError("CUDA speech requested but unavailable. Install CUDA PyTorch or set tts_device to cpu.")
             self.tts = KPipeline(lang_code=lang, device=device, repo_id="hexgrad/Kokoro-82M")
             print(f"[TTS] Kokoro device: {device}" + (f" ({torch.cuda.get_device_name(0)})" if device == "cuda" else ""), flush=True)
+            from core.runtime_state import update
+            update(tts_device=device)
             self.pipelines[lang] = self.tts
         if lang not in self.pipelines:
             from kokoro import KPipeline
@@ -345,6 +347,29 @@ class LocalSession:
             latest = refresh()
             for key in ("system_instruction", "session_context"):
                 self.config[key] = latest[key]
+        from core.direct_requests import direct_request
+        direct_content = "\n".join(p.get("text", "") for p in parts)
+        direct = direct_request(direct_content) if self.config.get("direct_requests") else None
+        if direct and direct[0] in self.allowed:
+            from core.task_journal import record
+            from actions.calculator import calculate
+            from actions.environment_inspect import inspect_environment
+            tool, args = direct
+            handler = calculate if tool == "calculator" else inspect_environment
+            try:
+                raw = await asyncio.to_thread(handler, args)
+                data = json.loads(raw)
+                answer = data["answer"]
+            except Exception as exc:
+                answer = f"I couldn't obtain that result: {exc}"
+                raw = json.dumps({"ok": False, "error": str(exc)})
+            record(tool, raw)
+            print(f"[Direct] {tool}: no routing or answer model call.", flush=True)
+            self.history.extend([{"role": "user", "content": direct_content},
+                                 {"role": "assistant", "content": answer}])
+            self._trim(self.history)
+            await self._speak_text(answer)
+            return
         # Work on a copy: a failed/cancelled turn must not leave dangling tool calls.
         history = copy.deepcopy(self.history)
         content = "\n".join(p.get("text", "") for p in parts)
@@ -397,8 +422,23 @@ class LocalSession:
             await self.tool_done.wait()
             self.tool_done = None
             for result in self.tool_results:
+                from core.task_journal import record
+                if result.name != "task_history":
+                    record(result.name, result.response.get("result", ""))
                 history.append({"role": "tool", "tool_name": result.name,
                                 "content": json.dumps(result.response, ensure_ascii=False, default=str)[:16000]})
+            for result in self.tool_results:
+                if result.name == "command_runner":
+                    try:
+                        job = json.loads(result.response.get("result", "{}"))
+                    except (ValueError, TypeError):
+                        continue
+                    if job.get("status") == "running":
+                        answer = f"The command is still running (job {job['job_id']}); its result is not verified yet. Ask me to check that job for its result."
+                        history.append({"role": "assistant", "content": answer})
+                        self.history[:] = history
+                        await self._speak_text(answer)
+                        return
             blocked = next((str(r.response.get("result", "")) for r in self.tool_results
                             if r.name == "file_controller" and isinstance(r.response, dict)
                             and str(r.response.get("result", "")).startswith("File already exists:")), None)

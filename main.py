@@ -1024,7 +1024,7 @@ class JarvisLive:
 
         return {"system_instruction": "\n".join(parts), "declarations": _all_decls,
                 "session_context": "\n".join([mem_str, time_ctx]), "adaptive_tools": True,
-                "prewarm_model": False, "direct_vision": True, "refresh_context": self._build_config}
+                "prewarm_model": False, "direct_vision": True, "direct_requests": True, "refresh_context": self._build_config}
 
     async def _execute_tool_batch(self, calls):
         results = []
@@ -1056,7 +1056,7 @@ class JarvisLive:
             if not str(key).strip() or not str(value).strip():
                 return types.FunctionResponse(id=fc.id, name=name, response={"result": "Memory not saved: key and value must be nonempty."})
             if key and value:
-                update_memory({category: {key: {"value": value}}})
+                update_memory({category: {key: {"value": value, "source": "save_memory tool"}}})
                 if category == "identity" and key in ("name", "user_name", "preferred_name"):
                     from memory.config_manager import save_assistant_config
                     save_assistant_config(self._asst_name, str(value))
@@ -1169,6 +1169,9 @@ class JarvisLive:
                 _ctx = {"player": self.ui, "speak": self._tool_progress,
                         "response": None, "session_memory": None}
                 r = await loop.run_in_executor(None, lambda: self._action_registry.run(name, args, _ctx))
+                if name == "command_runner":
+                    from actions.command_runner import await_result
+                    r = await await_result(r)
                 result = r or "Done."
                 # web_search: mirror results to the on-screen content panel
                 if (name == "web_search" and r
@@ -1852,29 +1855,20 @@ class JarvisLive:
     # ── System monitor ──────────────────────────────────────────────────────────
 
     async def _run_system_monitor(self) -> None:
-        """Background task: voice alerts when metrics exceed thresholds."""
+        """Background task: status-log notices when metrics exceed thresholds."""
         while True:
             await asyncio.sleep(10)
             alert = await asyncio.to_thread(self._sys_monitor.check)
             if not alert or not self.session or not self._awake:
                 continue
-            # Don't interrupt an active conversation
-            with self._speaking_lock:
-                speaking = self._is_speaking
-            if speaking or (time.monotonic() - self._last_user_speech) < 10:
-                continue
-            try:
-                await self.session.send_client_content(
-                    turns={"role": "user", "parts": [{"text": alert}]},
-                    turn_complete=True,
-                )
-            except Exception as e:
-                print(f"[Monitor] ⚠️ Could not send alert: {e}")
+            # Measurements are status notifications, never synthetic user requests.
+            # In particular, routine GPU load is not an emergency during gaming/TTS.
+            self.ui.write_log("SYS: " + alert)
 
     # ── Background monitor ──────────────────────────────────────────────────────
 
     async def _run_background_monitor(self) -> None:
-        """Check user-configured topics once per day; speak alerts when new headlines appear."""
+        """Check user-configured topics once per day; log new headlines separately."""
         await asyncio.sleep(300)          # wait 5 min after startup before first check
         while True:
             if self.session and self._awake:
@@ -1885,21 +1879,8 @@ class JarvisLive:
                 if not speaking and not recent_speech:
                     try:
                         alerts = await asyncio.to_thread(monitor_check_all)
-                        memory = load_memory()
-                        lang_e = memory.get("identity", {}).get("language", {})
-                        lang   = (lang_e.get("value", "") if isinstance(lang_e, dict) else str(lang_e)).strip() or "English"
                         for alert in alerts:
-                            msg = (
-                                f"{alert}\n\n"
-                                f"Inform the user about this development naturally in {lang}. "
-                                "One brief sentence only."
-                            )
-                            await self.session.send_client_content(
-                                turns={"role": "user", "parts": [{"text": msg}]},
-                                turn_complete=True,
-                            )
-                            print("[JARVIS] Monitor alert sent.")
-                            await asyncio.sleep(6)   # gap between consecutive alerts
+                            self.ui.write_log("SYS: Topic update — " + str(alert))
                     except Exception as e:
                         print(f"[Monitor] ⚠️ Background check error: {e}")
             await asyncio.sleep(1800)     # check every 30 minutes
@@ -1914,6 +1895,13 @@ class JarvisLive:
         """
         while True:
             await asyncio.sleep(60)   # evaluate once per minute
+            from core.home_llm import load_config
+            if not load_config().get("proactive_conversation_enabled", False):
+                continue
+            # Opt-in check-ins must wait for both queued and active requests.
+            if self.session and (getattr(self.session, "active", None) is not None
+                                 or not self.session.inputs.empty()):
+                continue
 
             if not self.session or not self._awake:
                 continue
