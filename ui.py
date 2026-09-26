@@ -62,8 +62,8 @@ def _read_full_config() -> dict:
 APP_VERSION  = "MARK LIV"
 APP_PROTOCOL = APP_VERSION.split()[-1]
 
-_DEFAULT_W, _DEFAULT_H = 980, 700
-_MIN_W,     _MIN_H     = 820, 580
+_DEFAULT_W, _DEFAULT_H = 1440, 920
+_MIN_W,     _MIN_H     = 1100, 760
 _LEFT_W  = 205
 _RIGHT_W = 340
 
@@ -3067,7 +3067,7 @@ class MainWindow(QMainWindow):
         self._console = QTextEdit(); self._console.setReadOnly(True)
         self._console.document().setMaximumBlockCount(1500)
         self._console.setStyleSheet(f'background: {C.PANEL}; color: {C.TEXT_MED}; border: none; padding: 8px;')
-        self._workspace_tabs.addTab(self._board, 'Notes & projects')
+        self._workspace_tabs.addTab(self._board, 'Notes && projects')
         self._workspace_tabs.addTab(self._console, 'Activity console')
         self._center_split.addWidget(self._workspace_tabs)
         self._center_split.addWidget(self._content_panel)
@@ -3082,7 +3082,8 @@ class MainWindow(QMainWindow):
         self._log.console = self._console
         body.addWidget(self._right_panel, stretch=0)
 
-        root.addLayout(body, stretch=1)
+        from core.command_center import mount
+        mount(self, root, body)
         root.addWidget(self._build_footer())
 
         # Quick-access drawer (floating overlay, built after central widget layout is done)
