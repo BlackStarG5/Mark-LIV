@@ -83,6 +83,17 @@ def quick_route(content, history, names):
 
 def select_tools(content, history, declarations):
     names={t['function']['name'] for t in home_llm.tool_specs(declarations)}
+    # Choose the requested store, not the store used in the previous turn.
+    # The model still resolves content from context and supplies the arguments.
+    text = content.casefold().replace('’', "'")
+    persistence = set()
+    requesting = re.search(r'\b(make|made|create|created|save|saved|add|added|take|put)\b', text)
+    discussing = re.search(r"\b(?:(?:don't|do not|never) (?:make|create|save|add|take|put)|explain|how do|how to|what happens|can you explain)\b", text)
+    if requesting and not discussing:
+        if re.search(r'\bnotes?\b', text):
+            persistence.add('workspace_board')
+    if persistence and persistence <= names:
+        return ToolSelection(persistence, mode='act')
     schema={'type':'object','properties':{'mode':{'type':'string','enum':['answer','clarify','observe','act']},'tools':{'type':'array','items':{'type':'string','enum':sorted(names)},'maxItems':4}},
             'required':['mode','tools'],'additionalProperties':False}
     quick = quick_route(content, history, names)
@@ -101,6 +112,7 @@ def select_tools(content, history, declarations):
               'game_updater installs games; it does not answer game questions. '
               'Use environment_inspect for any named application resources (scope=process, target=application name), the assistant own resources or server; system_status means whole PC. '
               'Use calculator for arithmetic. Use project_workspace/command_runner/git_project for existing project work. '
+              'Notes belong in workspace_board; tasks belong in task_list. A time written inside a note is plain note content, not a request to inspect a calendar or schedule a reminder. Corrections about an unsaved note must use workspace_board even if the previous action added a task. '
               'Use tools for requested actions and corrections. Never answer here.\n' + catalog(declarations))
     recent = [m for m in history if m.get('role') in ('user', 'assistant', 'tool')][-8:]
     context = '\n'.join(f"{m['role']} {m.get('tool_name','')}: {m.get('content','')[:1200]}" for m in recent)[-7000:]
@@ -135,6 +147,7 @@ def compact_prompt(name, platform, declarations):
         "Use environment_inspect scope=process with target for other named applications. Check the returned scope and process names match the requested subject before answering. If not, retry with the correct target; never relabel PC or JARVIS measurements as another application. "
         "Use environment_inspect for observed state and calculator for calculations. Never substitute system RAM for application RAM or configuration for a live measurement. "
         "When asked to make/save a note, persist it with workspace_board; when asked to create a task, use task_list. These stores populate the dashboard automatically. A chat acknowledgement alone does not save anything. List the relevant store to resolve references before updates. "
+        "For note creation preserve requested times verbatim in the note body. Do not inspect a schedule or request a date merely to save note text. For an unsaved-note correction, recover the original content from the conversation and list notes to check whether it exists before adding it. Confirm saved content briefly after tool success; avoid unnecessary offers and boilerplate. "
         "For a multi-step request, track every requested step, execute the appropriate tools, check results, and report unfinished steps. "
         "Act as a practical partner: inspect first, form hypotheses from evidence, run relevant checks, then verify the requested result. For CPU issues use environment_inspect cpu_diagnostics; GPU issues use gpu_diagnostics; native windows/monitors use desktop_inspect. For requested malware scans use malware_scan on the specified path and poll its job; never infer malware or a clean bill of health from performance readings. "
         "For coding, use developer_environment to inspect Java/build tools, project_workspace to initialize/create/read/patch files, command_runner to run builds and tests, and web_search for official version-specific documentation. For Minecraft establish game version and Fabric/Forge/NeoForge before generating a project; ask if unspecified. Use the project's Gradle wrapper and verify the built JAR. Open the project in IntelliJ using developer_environment only when requested. Never call uncompiled source a working mod. "

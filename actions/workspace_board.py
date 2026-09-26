@@ -24,8 +24,11 @@ def workspace_board(parameters):
             if action == 'update':
                 count = db.execute('UPDATE cards SET kind=?, title=?, body=?, updated=? WHERE id=?', (kind,title,body,stamp(),key)).rowcount
                 return result(ok=bool(count), id=key)
+            existing = db.execute('SELECT id FROM cards WHERE kind=? AND title=? AND body=?', (kind,title,body)).fetchone()
+            if existing:
+                return result(ok=True,id=existing[0],title=title,body=body,already_exists=True)
             db.execute('INSERT INTO cards VALUES (?,?,?,?,?)',(key,kind,title,body,stamp()))
-            return result(ok=True,id=key)
+            return result(ok=True,id=key,title=title,body=body)
         raise ValueError('Choose list, add or update.')
 
 
