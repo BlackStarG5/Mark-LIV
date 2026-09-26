@@ -12,6 +12,10 @@ from core.agent_support import stamp
 ROOT = Path.home() / 'Documents' / 'Jarvis'
 _active = 'regular'
 _lock = threading.RLock()
+_drafts = {}
+
+def _draft_key(chat_id):
+    return (str(ROOT.resolve()), chat_id)
 
 
 @contextmanager
@@ -24,7 +28,6 @@ def database():
             conn.execute('CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, title TEXT, folder TEXT, shared INTEGER)')
             conn.execute('CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, title TEXT, project_id TEXT, history TEXT, updated TEXT)')
             conn.execute('CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY, name TEXT, path TEXT, project_id TEXT, added TEXT)')
-            conn.execute("INSERT OR IGNORE INTO chats VALUES ('regular','Regular chat',NULL,'[]',?)",(stamp(),))
             yield conn
     finally:
         conn.close()
@@ -41,10 +44,15 @@ def set_active(chat_id):
 
 
 def get_chat(chat_id=None):
+    key=chat_id or active_id()
     with database() as db:
-        row=db.execute('SELECT chats.*, projects.title AS project_title, projects.folder, projects.shared FROM chats LEFT JOIN projects ON chats.project_id=projects.id WHERE chats.id=?',(chat_id or active_id(),)).fetchone()
-        if row is None: raise ValueError('Chat not found.')
-        return dict(row)
+        row=db.execute('SELECT chats.*, projects.title AS project_title, projects.folder, projects.shared FROM chats LEFT JOIN projects ON chats.project_id=projects.id WHERE chats.id=?',(key,)).fetchone()
+        if row is not None: return dict(row)
+        draft=_drafts.get(_draft_key(key))
+        if draft is None and key=='regular': draft={'id':key,'title':'New chat','project_id':None,'history':'[]','updated':stamp()}
+        if draft is None: raise ValueError('Chat not found.')
+        project=db.execute('SELECT * FROM projects WHERE id=?',(draft['project_id'],)).fetchone()
+        return dict(draft,project_title=project['title'] if project else None,folder=project['folder'] if project else None,shared=project['shared'] if project else None)
 
 
 def private(chat_id=None):
@@ -53,7 +61,9 @@ def private(chat_id=None):
 
 
 def list_chats():
-    with database() as db: return [dict(r) for r in db.execute('SELECT id,title,project_id,updated FROM chats ORDER BY updated DESC')]
+    with database() as db:
+        return [dict(r) for r in db.execute('SELECT * FROM chats ORDER BY updated DESC')
+                if any(m.get('role')=='user' for m in json.loads(r['history']))]
 
 
 def list_projects():
@@ -75,7 +85,7 @@ def create_chat(project_id=None):
     key=uuid.uuid4().hex[:12]
     with database() as db:
         if project_id and not db.execute('SELECT id FROM projects WHERE id=?',(project_id,)).fetchone(): raise ValueError('Project not found.')
-        db.execute('INSERT INTO chats VALUES (?,?,?,?,?)',(key,'New chat',project_id,'[]',stamp()))
+        _drafts[_draft_key(key)]={'id':key,'title':'New chat','project_id':project_id,'history':'[]','updated':stamp()}
     return key
 
 
@@ -83,17 +93,19 @@ def load_history(chat_id=None): return json.loads(get_chat(chat_id)['history'])
 
 
 def save_history(history, chat_id=None):
+    if not any(m.get('role')=='user' for m in history): return
     chat=get_chat(chat_id)
     previous=json.loads(chat['history'])
     if history and previous and history[:len(previous)] != previous:
         overlap=next((n for n in range(min(len(previous),len(history)),0,-1) if previous[-n:]==history[:n]),0)
         history=previous+history[overlap:]
     title=chat['title']
-    if title=='New chat':
+    if title in ('New chat','Regular chat'):
         first=next((m.get('content','') for m in history if m.get('role')=='user' and not m.get('content','').startswith('[')), '')
         if first: title=' '.join(first.split())[:64]
     with database() as db:
-        db.execute('UPDATE chats SET title=?,history=?,updated=? WHERE id=?',(title,json.dumps(history,ensure_ascii=False),stamp(),chat['id']))
+        db.execute('INSERT INTO chats VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,history=excluded.history,updated=excluded.updated',(chat['id'],title,chat['project_id'],json.dumps(history,ensure_ascii=False),stamp()))
+    _drafts.pop(_draft_key(chat['id']),None)
 
 
 def allowed_project_ids(chat_id=None):
@@ -148,3 +160,20 @@ def scoped_path(default):
     if active_id()=='regular': return default
     chat=get_chat()
     return Path(chat['folder'])/'State'/Path(default).name if private() else default
+
+
+def delete_chat(chat_id):
+    if chat_id==active_id(): raise ValueError('Switch away from the chat before deleting it.')
+    with database() as db: db.execute('DELETE FROM chats WHERE id=?',(chat_id,))
+    _drafts.pop(_draft_key(chat_id),None)
+
+
+def delete_project(project_id):
+    if get_chat()['project_id']==project_id: raise ValueError('Switch away from this project before deleting it.')
+    with database() as db:
+        db.execute('DELETE FROM chats WHERE project_id=?',(project_id,))
+        db.execute('DELETE FROM media WHERE project_id=?',(project_id,))
+        db.execute('DELETE FROM projects WHERE id=?',(project_id,))
+    for key,draft in list(_drafts.items()):
+        if key[0]==str(ROOT.resolve()) and draft['project_id']==project_id: _drafts.pop(key,None)
+    # Preserve project files on disk: deleting navigation is not permission to erase code.

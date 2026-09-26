@@ -329,8 +329,15 @@ class LocalSession:
         while True:
             parts = await self.inputs.get()
             self.cancelled = False
+            submitted = "\n".join(p.get('text','') for p in parts).strip()
+            snapshot = list(self.history) + ([{'role':'user','content':submitted}] if submitted else [])
             self.active = asyncio.create_task(self._turn(parts))
             try:
+                if submitted and self.config.get('persist_history'):
+                    try:
+                        await asyncio.to_thread(self.config['persist_history'], snapshot)
+                    except Exception as exc:
+                        self.log(f'ERR: Chat could not be saved: {exc}')
                 await self.active
             except asyncio.CancelledError:
                 if not self.cancelled:

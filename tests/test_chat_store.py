@@ -68,3 +68,32 @@ class ChatStoreTests(unittest.TestCase):
             workspace_board({'action':'add','kind':'note','title':'Work note','body':'Inside'})
             store.set_active('regular')
             self.assertEqual([c['title'] for c in json.loads(workspace_board({'action':'list'}))['cards']],['Regular note'])
+
+    def test_empty_drafts_and_startup_are_not_saved(self):
+        chat=store.create_chat()
+        store.save_history([{'role':'assistant','content':'Systems online.'}],chat)
+        self.assertEqual(store.list_chats(),[])
+        with store.database() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM chats').fetchone()[0],0)
+        store.save_history([{'role':'user','content':'Apple pie recipe'}],chat)
+        self.assertEqual(store.list_chats()[0]['title'],'Apple pie recipe')
+
+    def test_regular_chat_receives_first_message_title(self):
+        store.save_history([{'role':'user','content':'Apple pie'}])
+        self.assertEqual(store.get_chat()['title'],'Apple pie')
+
+    def test_delete_project_removes_chats_but_preserves_files(self):
+        project=store.create_project('Work');chat=store.create_chat(project)
+        store.save_history([{'role':'user','content':'Project topic'}],chat)
+        folder=Path(store.get_chat(chat)['folder']);file=folder/'keep.txt';file.write_text('keep')
+        store.delete_project(project)
+        self.assertEqual(store.list_chats(),[]);self.assertEqual(store.list_projects(),[])
+        self.assertEqual(file.read_text(),'keep')
+
+    def test_delete_chat_keeps_shared_media_and_rejects_active_chat(self):
+        chat=store.create_chat();store.save_history([{'role':'user','content':'Hello'}],chat)
+        source=Path(self.temp.name)/'keep.txt';source.write_text('keep');store.import_media(source)
+        store.set_active(chat)
+        with self.assertRaises(ValueError): store.delete_chat(chat)
+        store.set_active('regular');store.delete_chat(chat)
+        self.assertEqual(store.list_chats(),[]);self.assertEqual(len(store.list_media()),1)
