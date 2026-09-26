@@ -1508,10 +1508,14 @@ class JarvisLive:
 
                     if response.tool_call:
                         fn_responses = await self._execute_tool_batch(response.tool_call.function_calls)
-                        await self.session.send_tool_response(
+                        accepted = await self.session.send_tool_response(
                             function_responses=fn_responses
                         )
-                        await self._flush_pending_vision()
+                        if accepted is not False:
+                            await self._flush_pending_vision()
+                        else:
+                            self._pending_vision = None
+                            self._vision_busy = False
         except Exception as e:
             print(f"[JARVIS] ❌ Recv: {e}")
             traceback.print_exc()

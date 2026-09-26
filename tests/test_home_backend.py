@@ -70,7 +70,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         history = []
         session = LocalSession(CONFIG, history, Speech())
         async def handler(calls):
-            await session.send_tool_response([NS(name=calls[0].name, response={"result": "ok"})])
+            await session.send_tool_response([NS(id=calls[0].id, name=calls[0].name, response={"result": "ok"})])
             if calls[0].name == "screen_process":
                 await session.send_client_content({"parts": [{"inline_data": {"mime_type": "image/png", "data": "eA=="}}]})
         with patch.object(home_llm, "models", return_value=[{"name": "qwen3:8b"}]), patch.object(home_llm, "chat", side_effect=chat), patch.object(home_llm, "describe_images", return_value="Screen says example.txt"):

@@ -10,6 +10,7 @@ import re
 import threading
 import sys
 import time
+import uuid
 from pathlib import Path
 from collections import OrderedDict
 from types import SimpleNamespace as NS
@@ -176,6 +177,7 @@ class LocalSession:
         self.tasks = []
         self.tool_done = None
         self.tool_results = []
+        self._awaiting_ids = set()
         self.images = []
         self.cancelled = False
         self.active = None
@@ -249,15 +251,25 @@ class LocalSession:
         await self.inputs.put([{"startup_greeting": True}])
 
     async def send_tool_response(self, function_responses):
-        self.tool_results = function_responses
+        ids = {getattr(r, 'id', None) for r in function_responses}
+        if self.tool_done is not None and ids == self._awaiting_ids:
+            self.tool_results = function_responses
+            return True
+        else:
+            from core.task_journal import record
+            for response in function_responses:
+                record(response.name, response.response.get('result', ''))
+            self.log('SYS: Late tool result ignored for the current request; the earlier action may still have run.')
+            return False
 
     async def receive(self):
         while True:
             response = await self.events.get()
+            waiter = self.tool_done
             yield response
             # The consumer has now executed ALL calls and attached pending images.
-            if response.tool_call and self.tool_done is not None:
-                self.tool_done.set()
+            if response.tool_call and waiter is not None and self.tool_done is waiter:
+                waiter.set()
 
     def interrupt(self):
         self.cancelled = True
@@ -406,6 +418,7 @@ class LocalSession:
                 self.history[:] = history
                 return
             checked = []
+            batch_id = uuid.uuid4().hex[:12]
             for i, call in enumerate(calls):
                 fn = call.get("function", {})
                 args = fn.get("arguments", {})
@@ -415,8 +428,9 @@ class LocalSession:
                     raise ValueError("Model returned an unknown tool or invalid arguments.")
                 from jsonschema import validate
                 validate(args, self.schemas[fn["name"]])
-                checked.append(NS(id=call.get("id") or f"local_{i}", name=fn["name"], args=args))
+                checked.append(NS(id=f"{batch_id}_{i}", name=fn["name"], args=args))
             self.tool_done = asyncio.Event()
+            self._awaiting_ids = {c.id for c in checked}
             self.tool_results, self.images = [], []
             await self.events.put(event(calls=checked))
             await self.tool_done.wait()

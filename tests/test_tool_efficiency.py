@@ -41,7 +41,7 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
                 event = await asyncio.wait_for(session.events.get(), 2)
                 if event.tool_call:
                     from types import SimpleNamespace
-                    await session.send_tool_response([SimpleNamespace(name='weather_report', response={'result': '62 degrees'})])
+                    await session.send_tool_response([SimpleNamespace(id=event.tool_call.function_calls[0].id, name='weather_report', response={'result': '62 degrees'})])
                     session.tool_done.set()  # receive() acknowledges dispatch after the consumer resumes.
                     break
             await asyncio.wait_for(task, 2)

@@ -162,6 +162,27 @@ class JobTests(unittest.TestCase):
 
 
 class IntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_late_result_cannot_release_or_contaminate_new_turn(self):
+        from core.local_session import LocalSession, event
+        session = LocalSession({'system_instruction': 'Test', 'declarations': []}, speech=NS(synthesize=lambda _: b''))
+        old_waiter = asyncio.Event()
+        session.tool_done = old_waiter
+        session._awaiting_ids = {'old'}
+        await session.events.put(event(calls=[NS(id='old', name='command_runner')]))
+        stream = session.receive()
+        await anext(stream)
+        new_waiter = asyncio.Event()
+        session.tool_done = new_waiter
+        session._awaiting_ids = {'new'}
+        with tempfile.TemporaryDirectory() as folder, patch('core.task_journal.PATH', Path(folder, 'log')):
+            accepted = await session.send_tool_response([NS(id='old', name='command_runner', response={'result': 'old result'})])
+        self.assertFalse(accepted)
+        await session.events.put(event(text='new turn'))
+        await anext(stream)
+        self.assertFalse(new_waiter.is_set())
+        self.assertEqual(session.tool_results, [])
+        await stream.aclose()
+
     async def test_application_waits_for_command_exit_without_model_poll(self):
         from actions.command_runner import await_result
         with tempfile.TemporaryDirectory() as folder:

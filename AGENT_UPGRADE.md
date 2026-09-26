@@ -39,6 +39,8 @@ current value continues to be what reaches the normal memory prompt.
 - Fully matched simple arithmetic and application-RAM questions call the tools
   directly, without router/answer inference. More complex wording uses normal
   tool selection. Multi-step requests never use these shortcuts.
+- Late results from interrupted tool calls cannot release or populate a newer
+  request; any associated old screen capture is discarded.
 - Short command jobs are followed for up to 20 seconds without model polling.
   Longer jobs return an explicit unfinished status and ID; ask to check that job.
   JARVIS does not promise an unattended follow-up it has not scheduled.
@@ -117,7 +119,7 @@ live-verified. Local tasks and drafts work independently.
 
 ## Validation and remaining limits
 
-85 automated tests pass, and all 33 tool parameter schemas validate.
+86 automated tests pass, and all 33 tool parameter schemas validate.
 
 The live Qwen3:8B test read a disposable broken Python project, patched subtraction
 into addition, ran a unit test and correctly reported its success. The successful
