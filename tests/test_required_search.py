@@ -17,3 +17,14 @@ class RequiredSearchTests(unittest.TestCase):
     def test_no_browse_and_non_web_tasks_do_not_force_search(self):
         for text in ["Don't search the web; explain what a release date means",'Look at my screen','Search my documents','What is my name?']:
             with self.subTest(text=text): self.assertFalse(requires_web(text))
+
+    def test_factual_questions_and_documentation_browse(self):
+        for text in ["What's a burger?",'What is FAB M4eo?','Explain photosynthesis','Find the official Python documentation']:
+            with self.subTest(text=text): self.assertTrue(requires_web(text))
+        self.assertTrue(requires_web('Is this correct?', [{'role':'assistant','content':'A claim about history'}]))
+
+    def test_local_context_and_small_talk_are_not_public_search(self):
+        for text in ['How are you?','What is my name?','What is on my screen?','Explain my code','Is this correct?']:
+            with self.subTest(text=text): self.assertFalse(requires_web(text))
+        self.assertFalse(requires_web('Is this correct?', [{'role':'tool','tool_name':'project_workspace','content':'private code'}]))
+        self.assertFalse(requires_web('Is this correct?', [{'role':'user','content':'Here is my private document'}]))
