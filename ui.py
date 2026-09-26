@@ -30,7 +30,7 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QPushButton, QScrollArea, QSizePolicy, QSplitter,
-    QStackedWidget, QTextEdit, QVBoxLayout, QWidget, QProgressBar,
+    QStackedWidget, QTextEdit, QVBoxLayout, QWidget, QProgressBar, QTabWidget,
 )
 
 try:
@@ -64,7 +64,7 @@ APP_PROTOCOL = APP_VERSION.split()[-1]
 
 _DEFAULT_W, _DEFAULT_H = 980, 700
 _MIN_W,     _MIN_H     = 820, 580
-_LEFT_W  = 148
+_LEFT_W  = 205
 _RIGHT_W = 340
 
 _OS = platform.system()  # "Windows" | "Darwin" | "Linux"
@@ -280,6 +280,10 @@ class _SysMetrics:
         if self._slow_tick == 1:
             gpu = self._get_gpu()
             tmp = self._get_temp()
+            try:
+                self.gpu_temp = float(self._pynvml.nvmlDeviceGetTemperature(self._pynvml_h, 0))
+            except Exception:
+                self.gpu_temp = -1.0
         else:
             gpu = self.gpu
             tmp = self.tmp
@@ -374,6 +378,7 @@ class _SysMetrics:
                 "net": self.net,
                 "gpu": self.gpu,
                 "tmp": self.tmp,
+                "gpu_temp": getattr(self, "gpu_temp", -1.0),
             }
 
 
@@ -1023,6 +1028,10 @@ class LogWidget(QTextEdit):
         self._sig.emit(text)
 
     def _enqueue(self, text: str):
+        console = getattr(self, 'console', None)
+        if console is not None and not text.lower().startswith(('you:', 'jarvis:', self._ai_name_lc + ':')):
+            console.append(text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;'))
+            return
         self._queue.append(text)
         if not self._typing:
             self._next()
@@ -3049,14 +3058,28 @@ class MainWindow(QMainWindow):
             }}
         """)
         self._center_split.addWidget(self._hud_cam_stack)
+        from core.dashboard_board import DashboardBoard
+        self._workspace_tabs = QTabWidget()
+        self._workspace_tabs.setMinimumHeight(190)
+        self._workspace_tabs.setStyleSheet(f'QTabWidget::pane {{border: 1px solid {C.BORDER};}} QTabBar::tab {{background: {C.PANEL}; color: {C.TEXT}; padding: 8px 18px;}} QTabBar::tab:selected {{color: {C.PRI};}}')
+        self._board = DashboardBoard()
+        self._board.setStyleSheet(f'QWidget {{color: {C.TEXT};}} QLineEdit, QTextEdit, QListWidget, QComboBox {{background: {C.PANEL}; border: 1px solid {C.BORDER}; border-radius: 4px; padding: 5px;}} QPushButton {{background: {C.PANEL}; border: 1px solid {C.PRI_DIM}; padding: 6px; color: {C.PRI};}}')
+        self._console = QTextEdit(); self._console.setReadOnly(True)
+        self._console.document().setMaximumBlockCount(1500)
+        self._console.setStyleSheet(f'background: {C.PANEL}; color: {C.TEXT_MED}; border: none; padding: 8px;')
+        self._workspace_tabs.addTab(self._board, 'Notes & projects')
+        self._workspace_tabs.addTab(self._console, 'Activity console')
+        self._center_split.addWidget(self._workspace_tabs)
         self._center_split.addWidget(self._content_panel)
         self._center_split.addWidget(self._quiz_panel)
-        self._center_split.setStretchFactor(0, 3)
+        self._center_split.setStretchFactor(0, 2)
         self._center_split.setStretchFactor(1, 1)
         self._center_split.setCollapsible(0, False)
+        QTimer.singleShot(0, lambda: self._center_split.setSizes([max(300, int(self._center_split.height() * .62)), 250, 0, 0]))
         body.addWidget(self._center_split, stretch=5)
 
         self._right_panel = self._build_right_panel()
+        self._log.console = self._console
         body.addWidget(self._right_panel, stretch=0)
 
         root.addLayout(body, stretch=1)
@@ -3607,6 +3630,9 @@ class MainWindow(QMainWindow):
         else:
             self._bar_gpu.set_value(0, "N/A")
 
+        gpu_temp = snap.get("gpu_temp", -1)
+        self._bar_gpu_temp.set_value(max(0, gpu_temp), f"{gpu_temp:.0f}°C" if gpu_temp >= 0 else "N/A")
+
         # TMP
         tmp = snap["tmp"]
         if tmp >= 0:
@@ -3719,10 +3745,12 @@ class MainWindow(QMainWindow):
         self._bar_mem = MetricBar("MEM", C.ACC2)
         self._bar_net = MetricBar("NET", C.GREEN)
         self._bar_gpu = MetricBar("GPU", C.ACC)
-        self._bar_tmp = MetricBar("TMP", "#ff6688")
+        self._bar_tmp = MetricBar("SYSTEM TEMP", "#ff6688")
+        self._bar_gpu_temp = MetricBar("GPU TEMP", C.ACC)
+        self._bar_tmp.setToolTip("Platform temperature sensor; may not represent CPU package temperature.")
 
         for bar in [self._bar_cpu, self._bar_mem, self._bar_net,
-                    self._bar_gpu, self._bar_tmp]:
+                    self._bar_gpu, self._bar_tmp, self._bar_gpu_temp]:
             lay.addWidget(bar)
 
         lay.addSpacing(4)
@@ -3757,8 +3785,8 @@ class MainWindow(QMainWindow):
         lay.addStretch()
 
         for txt, col in [
-            ("AI CORE\nACTIVE",  C.GREEN),
-            ("SEC\nCLEARED",     C.PRI),
+            ("LOCAL WORKSPACE",  C.GREEN),
+            ("NOTES & PROJECTS\nSAVED ON THIS PC", C.PRI),
             ("PROTOCOL\n" + APP_PROTOCOL,   C.TEXT_DIM),
         ]:
             lbl = QLabel(txt)
@@ -3785,7 +3813,7 @@ class MainWindow(QMainWindow):
             l.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
             return l
 
-        lay.addWidget(_sec("ACTIVITY LOG"))
+        lay.addWidget(_sec("CONVERSATION"))
         self._log = LogWidget()
         lay.addWidget(self._log, stretch=1)
 
@@ -4153,7 +4181,7 @@ class MainWindow(QMainWindow):
         self._content_panel.show()
         if first_show:
             total = self._center_split.height()
-            self._center_split.setSizes([max(total - 220, 120), 220])
+            self._center_split.setSizes([max(total - 410, 300), 190, 220, 0])
 
     # ── document review ──────────────────────────────────────────────────────
     # Rendered as rich text into the content panel that already exists, rather
@@ -4238,7 +4266,7 @@ class MainWindow(QMainWindow):
         self._content_panel.show()
         if first_show:
             total = self._center_split.height()
-            self._center_split.setSizes([max(total - 260, 120), 260, 0])
+            self._center_split.setSizes([max(total - 450, 300), 190, 260, 0])
 
     # ── quiz panel ───────────────────────────────────────────────────────────
     # An interactive twin of the content panel. The plugin only ever hands over
@@ -4368,7 +4396,7 @@ class MainWindow(QMainWindow):
         self._quiz_panel.show()
         if first_show:
             total = self._center_split.height()
-            self._center_split.setSizes([max(total - 250, 120), 0, 250])
+            self._center_split.setSizes([max(total - 440, 300), 190, 0, 250])
         self._quiz_render()
 
     def _hide_quiz(self):

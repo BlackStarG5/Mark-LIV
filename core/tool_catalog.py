@@ -30,6 +30,7 @@ def quick_route(content, history, names):
     if 'environment_inspect' in names and re.search(r'\bcpu\b', text) and re.search(r'\b(spik\w*|diagnos\w*|investigat\w*|causes?|busiest|consum\w*)\b', text):
         selected.add('environment_inspect')
     rules = {
+        'workspace_board': r'\b(note board|project board|dashboard note|save (?:a |this )?note|my notes)\b',
         'desktop_inspect': r'\b(desktop environment|open windows|running applications|connected monitors|active window)\b',
         'gpu_diagnostics': r'\b(gpu|graphics card|nvidia|vram)\b',
         'malware_scan': r'\b(malware scan|virus scan|scan .* (?:malware|viruses)|defender scan|scan job)\b',
