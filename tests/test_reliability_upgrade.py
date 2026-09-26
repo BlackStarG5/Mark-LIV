@@ -12,6 +12,27 @@ from core.tool_catalog import quick_route
 
 
 class PipelineTests(unittest.IsolatedAsyncioTestCase):
+    async def test_interrupt_after_generation_clears_discard_before_next_audio(self):
+        import main
+        session=LocalSession({'system_instruction':'Test','declarations':[]},speech=NS(synthesize=lambda _:b''))
+        session.events.put_nowait(event(audio=b'old'))
+        session.interrupt()
+        acknowledgement=session.events.get_nowait()
+        self.assertTrue(acknowledgement.server_content.turn_complete)
+        self.assertTrue(session.events.empty())
+        app=object.__new__(main.JarvisLive)
+        app._interrupted=True;app._turn_done_event=asyncio.Event()
+        app._visemes=Mock();app.audio_in_queue=asyncio.Queue()
+        async def receive():
+            yield acknowledgement
+            self.assertFalse(app._interrupted)
+            yield event(audio=b'new reply')
+            self.assertEqual(app.audio_in_queue.get_nowait(),b'new reply')
+            raise asyncio.CancelledError()
+        app.session=NS(receive=receive)
+        with self.assertRaises(asyncio.CancelledError):await app._receive_audio()
+
+
     async def test_create_collision_cancels_later_calls_in_same_batch(self):
         import main
         app = object.__new__(main.JarvisLive)

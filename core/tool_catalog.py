@@ -103,7 +103,7 @@ def requires_web(content, history=()):
         recent=' '.join(str(m.get('content','')) for m in history[-4:])
         if re.search(r"(?:[A-Za-z]:\\|\[Attached files|\b(?:password|private|confidential|my address|my email)\b)",recent,re.I):return False
         return True
-    factual=re.search(r"\b(?:what(?: is|'s| are| does)|who (?:is|was|are)|when (?:is|was|did)|where (?:is|are)|why (?:is|are|do|does)|how (?:does|do)|define|explain|tell me about)\b",text)
+    factual=re.search(r"\b(?:what\b|which\b|what(?: is|'s| are| does)|who (?:is|was|are)|when (?:is|was|did)|where (?:is|are)|why (?:is|are|do|does)|how (?:does|do)|define|explain|tell me about)\b",text)
     documentation=re.search(r"\b(?:documentation|official docs|reference guide)\b",text)
     return bool(factual or documentation)
 

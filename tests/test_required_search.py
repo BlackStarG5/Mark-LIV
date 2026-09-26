@@ -28,3 +28,8 @@ class RequiredSearchTests(unittest.TestCase):
             with self.subTest(text=text): self.assertFalse(requires_web(text))
         self.assertFalse(requires_web('Is this correct?', [{'role':'tool','tool_name':'project_workspace','content':'private code'}]))
         self.assertFalse(requires_web('Is this correct?', [{'role':'user','content':'Here is my private document'}]))
+
+    def test_question_with_noun_between_what_and_verb_requires_search(self):
+        self.assertTrue(requires_web('What white blood cell creates smudge cells in a peripheral blood smear?'))
+        self.assertTrue(requires_web('Which cell produces this finding?'))
+        self.assertTrue(requires_web('Are you sure? Look it up and fact check.'))

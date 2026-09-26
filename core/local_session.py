@@ -279,6 +279,10 @@ class LocalSession:
             self.events.get_nowait()
         if self.active:
             self.active.cancel()
+        else:
+            # Playback can outlive generation. The UI still needs an acknowledgement
+            # to clear its discard flag before the next response begins.
+            self.events.put_nowait(event(done=True))
 
     async def _audio_worker(self):
         frames = []
