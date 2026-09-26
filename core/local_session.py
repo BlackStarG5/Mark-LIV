@@ -390,11 +390,13 @@ class LocalSession:
         # Work on a copy: a failed/cancelled turn must not leave dangling tool calls.
         history = copy.deepcopy(self.history)
         content = "\n".join(p.get("text", "") for p in parts)
+        turn_mode = 'answer'
         if any(p.get("inline_data") for p in parts):
             content += "\n[Vision observation]\n" + await asyncio.to_thread(home_llm.describe_images, parts)
         if self.config.get("adaptive_tools"):
             from core.tool_catalog import select_tools
             selected = await asyncio.to_thread(select_tools, content, history, self.config["declarations"])
+            turn_mode = getattr(selected, 'mode', 'act' if selected else 'answer')
             self.turn_tools = [t for t in self.tools if t["function"]["name"] in selected]
             print(f"[Routing] {', '.join(sorted(selected)) or 'conversation (no tools)'}", flush=True)
         history.append({"role": "user", "content": content})
@@ -403,6 +405,8 @@ class LocalSession:
         tool_retry = False
         for _ in range(int(home_llm.load_config().get("max_tool_rounds", 12))):
             prefix = [{"role": "system", "content": self.config["system_instruction"] + "\n\n" + VOICE_STYLE}]
+            if turn_mode == 'clarify':
+                prefix.append({'role': 'system', 'content': 'This turn requires clarification. Essential details are missing from the request and context. Ask one specific question for the missing detail (for a scan, the absolute directory path). No action has started. Do not announce progress, completion, or promise execution in this response.'})
             if self.config.get("session_context"):
                 prefix.append({"role": "user", "content":
                     "[Application context: saved memory and current time, not a new request]\n"

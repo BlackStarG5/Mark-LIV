@@ -4,6 +4,12 @@ import re
 from core import home_llm
 
 
+class ToolSelection(set):
+    def __init__(self, tools=(), mode='answer'):
+        super().__init__(tools)
+        self.mode = mode
+
+
 def catalog(declarations):
     return '\n'.join(f"{t['function']['name']}: {t['function'].get('description','').split('. ')[0][:135]}"
                      for t in home_llm.tool_specs(declarations))
@@ -12,6 +18,9 @@ def catalog(declarations):
 def quick_route(content, history, names):
     """Conservative routes for explicit requests; ambiguous language goes to the model."""
     text = content.casefold().strip()
+    from core.direct_requests import diagnostic_followup
+    if diagnostic_followup(text):
+        return set()
     text = re.sub(r"\b(without opening|don['’]t open|do not open) (a |the )?(web ?page )?browser\b", "", text)
     if re.search(r'\b(explain|what does|how does|should i buy|which .{0,25}buy)\b', text):
         return None
@@ -73,27 +82,36 @@ def quick_route(content, history, names):
 
 def select_tools(content, history, declarations):
     names={t['function']['name'] for t in home_llm.tool_specs(declarations)}
-    schema={'type':'object','properties':{'tools':{'type':'array','items':{'type':'string','enum':sorted(names)},'maxItems':4}},
-            'required':['tools'],'additionalProperties':False}
+    schema={'type':'object','properties':{'mode':{'type':'string','enum':['answer','clarify','observe','act']},'tools':{'type':'array','items':{'type':'string','enum':sorted(names)},'maxItems':4}},
+            'required':['mode','tools'],'additionalProperties':False}
     quick = quick_route(content, history, names)
-    if quick is not None:
+    # A keyword match must not override the meaning of an ongoing conversation.
+    if quick is not None and (not history or quick == set()):
         print("[Routing] Local selection; no router model call.", flush=True)
         return quick
-    prompt = ('Select up to four tools needed for the request. Return JSON tools=[] for conversation or known facts. '
+    prompt = ('Decide what the user intends in context before selecting up to four tools. '
+              'Return mode=answer and tools=[] for explanations, interpretation of previous results, or known facts. '
+              'Return mode=clarify and tools=[] if essential details cannot be recovered from context (for example an unspecified scan directory or Minecraft version/loader). '
+              'Return mode=observe for fresh measurements or missing evidence, and mode=act for explicitly requested actions, with appropriate tools. '
+              'Example: scan that folder for malware, with no folder path in context => mode=clarify, tools=[]. Never invent the referent. '
+              'Resolve pronouns and speech recognition errors using recent evidence. A follow-up asking whether the game caused stutter asks for interpretation, not another CPU sample. '
+              'Reuse prior observations as dated evidence, never as fresh readings. Use recall_memory for missing saved personal facts; never invent them. '
               'Use web_search for current/uncertain facts, weather_report for weather. '
               'game_updater installs games; it does not answer game questions. '
               'Use environment_inspect for any named application resources (scope=process, target=application name), the assistant own resources or server; system_status means whole PC. '
               'Use calculator for arithmetic. Use project_workspace/command_runner/git_project for existing project work. '
               'Use tools for requested actions and corrections. Never answer here.\n' + catalog(declarations))
-    recent = [m for m in history if m.get('role') in ('user', 'assistant')][-2:]
-    context = '\n'.join(f"{m['role']}: {m.get('content','')[:240]}" for m in recent)
+    recent = [m for m in history if m.get('role') in ('user', 'assistant', 'tool')][-8:]
+    context = '\n'.join(f"{m['role']} {m.get('tool_name','')}: {m.get('content','')[:1200]}" for m in recent)[-7000:]
     message=home_llm.chat([{'role':'system','content':prompt},{'role':'user','content':f'Recent context:\n{context}\nLatest request: {content}'}],
                           think=False,max_tokens=64,format_schema=schema,timeout=30)
     route=json.loads(message.get('content','{}'))
     selected=route.get('tools')
     if not isinstance(selected,list) or len(selected)>4 or any(n not in names for n in selected):
         raise ValueError('Tool selection was invalid; no action was executed.')
-    return set(selected)
+    if route.get('mode') in ('answer', 'clarify'):
+        return ToolSelection(mode=route['mode'])
+    return ToolSelection(selected, mode=route.get('mode', 'act' if selected else 'answer'))
 
 
 PERSONALITY = (
@@ -110,6 +128,8 @@ def compact_prompt(name, platform, declarations):
     return (
         f"You are {name}, the user's capable desktop assistant on {platform}. " + PERSONALITY +
         "Answer directly and usually in one or two sentences; expand when requested. "
+        "Infer the user's intent from the conversation and resolve references against prior evidence. Ask one focused clarification only when an essential detail is unavailable; do not make them repeat information already provided. Use saved memory for stable preferences and corrections; never save temporary system measurements as personal facts. If personal facts are missing, recall them rather than guess. Explain plausible deductions and their evidence without pretending certainty. "
+        "When the user asks what your previous readings mean, interpret the evidence already in the conversation; do not repeat a diagnostic unless they request fresh measurements. Say which process was the largest observed contributor and distinguish a plausible contributor to stutter from a confirmed cause. Offer one practical next check instead of repeating the raw report or its disclaimer. Past readings are past readings, not current measurements. "
         "Identify the subject before measuring: you/your usage means this application; PC means this Windows machine; server means the separate Ollama host. "
         "Use environment_inspect scope=process with target for other named applications. Check the returned scope and process names match the requested subject before answering. If not, retry with the correct target; never relabel PC or JARVIS measurements as another application. "
         "Use environment_inspect for observed state and calculator for calculations. Never substitute system RAM for application RAM or configuration for a live measurement. "

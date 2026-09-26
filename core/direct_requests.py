@@ -2,10 +2,20 @@
 import re
 
 
+def diagnostic_followup(text):
+    """Interpretation of evidence is conversation, unless a new action is requested."""
+    text = text.casefold().replace('’', "'")
+    if re.search(r'\b(rescan|recheck|check|scan|sample|measure|investigate|diagnose|run|kill|stop|close|disable|restart|delete|change|set|save|write)\b', text):
+        return False
+    return bool(re.search(r"\b(what (?:you're|you are) saying|so (?:you mean|that means|it means)|does that mean|what does (?:that|this) mean|based on (?:that|those|these)|probably causing|could (?:that|it) (?:cause|explain)|explain (?:that|those|these) (?:result|reading))\b", text))
+
+
 def direct_request(text):
     text = text.strip().casefold()
     text = re.sub(r'^(?:hey[, ]+)?jarvis[, ]+', '', text)
     text = re.sub(r'[, ]+please[.!?]*$', '', text).rstrip(' .?!')
+    if diagnostic_followup(text):
+        return None
     if re.fullmatch(r'(?:inspect|check|diagnose) (?:my |the )?gpu(?: status| usage| temperature| issues)?', text):
         return 'gpu_diagnostics', {}
     if re.fullmatch(r'(?:inspect|explore) (?:my |the )?desktop(?: environment)?', text):
