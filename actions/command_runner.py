@@ -12,7 +12,7 @@ _jobs = {}
 _lock = threading.RLock()
 
 
-async def await_result(raw, wait_seconds=20):
+async def await_result(raw, wait_seconds=20, poller=None):
     """Bounded application follow-through; no model calls or command retries."""
     import asyncio
     import json
@@ -22,7 +22,7 @@ async def await_result(raw, wait_seconds=20):
         if data.get('status') != 'running' or time.monotonic() >= deadline:
             return raw
         await asyncio.sleep(.1)
-        raw = await asyncio.to_thread(command_runner, {'action': 'poll', 'job_id': data['job_id']})
+        raw = await asyncio.to_thread(poller or command_runner, {'action': 'poll', 'job_id': data['job_id']})
 
 
 def stop_tree(process):

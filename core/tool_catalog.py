@@ -15,8 +15,16 @@ def quick_route(content, history, names):
     text = re.sub(r"\b(without opening|don['’]t open|do not open) (a |the )?(web ?page )?browser\b", "", text)
     if re.search(r'\b(explain|what does|how does|should i buy|which .{0,25}buy)\b', text):
         return None
+    if re.search(r'\b(build|create|make|implement|fix|debug)\b', text) and re.search(r'\b(code|project|mod|minecraft|java|intellij|program|app)\b', text):
+        return {'project_workspace', 'command_runner', 'web_search', 'developer_environment'} & names
     selected = {name for name in names if re.search(r'(?<!\w)' + re.escape(name) + r'(?!\w)', text)}
+    if 'environment_inspect' in names and re.search(r'\bcpu\b', text) and re.search(r'\b(spik\w*|diagnos\w*|investigat\w*|causes?|busiest|consum\w*)\b', text):
+        selected.add('environment_inspect')
     rules = {
+        'desktop_inspect': r'\b(desktop environment|open windows|running applications|connected monitors|active window)\b',
+        'gpu_diagnostics': r'\b(gpu|graphics card|nvidia|vram)\b',
+        'malware_scan': r'\b(malware scan|virus scan|scan .* (?:malware|viruses)|defender scan|scan job)\b',
+        'developer_environment': r'\b(java version|jdk|gradle|intellij|development environment)\b',
         'weather_report': r'\b(weather|temperature|forecast)\b',
         'system_status': r'\b(ram|cpu|gpu|memory usage|system status)\b',
         'screen_process': r'\b(on my screen|on the screen|my monitor|my webcam|look at my screen|visible in notepad)\b',
@@ -38,6 +46,10 @@ def quick_route(content, history, names):
             selected.add(name)
     if 'environment_inspect' in selected:
         selected.discard('system_status')
+    if 'gpu_diagnostics' in selected:
+        selected.discard('system_status')
+    if 'malware_scan' in selected:
+        selected.discard('file_controller')
     if 'project_workspace' in selected or 'document_search' in selected:
         selected.discard('file_controller')
     # File content analysis and coding need specialized tools: let the router decide.
@@ -102,6 +114,8 @@ def compact_prompt(name, platform, declarations):
         "Use environment_inspect scope=process with target for other named applications. Check the returned scope and process names match the requested subject before answering. If not, retry with the correct target; never relabel PC or JARVIS measurements as another application. "
         "Use environment_inspect for observed state and calculator for calculations. Never substitute system RAM for application RAM or configuration for a live measurement. "
         "For a multi-step request, track every requested step, execute the appropriate tools, check results, and report unfinished steps. "
+        "Act as a practical partner: inspect first, form hypotheses from evidence, run relevant checks, then verify the requested result. For CPU issues use environment_inspect cpu_diagnostics; GPU issues use gpu_diagnostics; native windows/monitors use desktop_inspect. For requested malware scans use malware_scan on the specified path and poll its job; never infer malware or a clean bill of health from performance readings. "
+        "For coding, use developer_environment to inspect Java/build tools, project_workspace to initialize/create/read/patch files, command_runner to run builds and tests, and web_search for official version-specific documentation. For Minecraft establish game version and Fabric/Forge/NeoForge before generating a project; ask if unspecified. Use the project's Gradle wrapper and verify the built JAR. Open the project in IntelliJ using developer_environment only when requested. Never call uncompiled source a working mod. "
         "Use project_workspace to inspect before editing, command_runner for tests, and git_project for version control. "
         "Running/pending is not completed. A successful command exit alone does not prove the user's goal. "
         "Never claim an action happened without tool evidence; do not reuse an old result as a fresh measurement. "

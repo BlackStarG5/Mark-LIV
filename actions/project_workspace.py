@@ -5,6 +5,7 @@ import tempfile
 import time
 import threading
 from collections import OrderedDict
+from pathlib import Path
 from core.agent_support import inside, result, searchable, SKIP_DIRS, workspace, is_link
 
 _reads = OrderedDict()
@@ -12,8 +13,25 @@ _read_lock = threading.Lock()
 
 
 def project_workspace(parameters):
-    root = workspace(parameters.get('root'))
     action = parameters['action']
+    if action == 'init':
+        supplied = parameters.get('root', '')
+        if not supplied or not Path(supplied).is_absolute():
+            raise ValueError('An explicit absolute project path is required.')
+        root = Path(supplied).resolve()
+        root.mkdir(parents=True, exist_ok=False)
+        return result(ok=True, root=str(root), verified=root.is_dir())
+    root = workspace(parameters.get('root'))
+    if action == 'create':
+        path = inside(root, parameters['path'])
+        content = parameters.get('content', '')
+        if not isinstance(content, str) or len(content.encode('utf-8')) > 2_000_000:
+            raise ValueError('Content must be UTF-8 text of at most 2 MB.')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        raw = content.encode('utf-8')
+        with path.open('xb') as handle:
+            handle.write(raw)
+        return result(ok=path.read_bytes() == raw, path=str(path), sha256=hashlib.sha256(raw).hexdigest())
     if action in ('read', 'patch'):
         path = inside(root, parameters['path'])
         if path.stat().st_size > 2_000_000:
@@ -99,5 +117,5 @@ def project_workspace(parameters):
                   scope='Supported text/source files; dependencies and common credential files excluded.')
 
 
-TOOL = {'name': 'project_workspace', 'description': 'Inspect a project: list, search literal content, read numbered lines, or patch one exact old_text/new_text match. Always read before patch: the tool remembers that version and rejects stale edits automatically. Saved bytes verified; undo supported.',
-        'parameters': {'type': 'OBJECT', 'properties': {'root': {'type': 'STRING'}, 'action': {'type': 'STRING', 'enum': ['list', 'read', 'search', 'patch']}, 'path': {'type': 'STRING'}, 'query': {'type': 'STRING'}, 'line': {'type': 'INTEGER'}, 'expected_sha256': {'type': 'STRING'}, 'old_text': {'type': 'STRING'}, 'new_text': {'type': 'STRING'}}, 'required': ['root', 'action']}, 'handler': project_workspace}
+TOOL = {'name': 'project_workspace', 'description': 'Build or inspect a project: init creates a NEW absolute root folder; create writes a NEW relative file with content (no overwrite); list/search/read/patch existing files. Read before patch; stale edits rejected. Saved bytes verified.',
+        'parameters': {'type': 'OBJECT', 'properties': {'root': {'type': 'STRING'}, 'action': {'type': 'STRING', 'enum': ['init', 'create', 'list', 'read', 'search', 'patch']}, 'content': {'type': 'STRING'}, 'path': {'type': 'STRING'}, 'query': {'type': 'STRING'}, 'line': {'type': 'INTEGER'}, 'expected_sha256': {'type': 'STRING'}, 'old_text': {'type': 'STRING'}, 'new_text': {'type': 'STRING'}}, 'required': ['root', 'action']}, 'handler': project_workspace}

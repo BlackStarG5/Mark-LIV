@@ -1169,9 +1169,10 @@ class JarvisLive:
                 _ctx = {"player": self.ui, "speak": self._tool_progress,
                         "response": None, "session_memory": None}
                 r = await loop.run_in_executor(None, lambda: self._action_registry.run(name, args, _ctx))
-                if name == "command_runner":
+                if name in ("command_runner", "malware_scan"):
                     from actions.command_runner import await_result
-                    r = await await_result(r)
+                    from actions.malware_scan import malware_scan
+                    r = await await_result(r, wait_seconds=300, poller=malware_scan if name == "malware_scan" else None)
                 result = r or "Done."
                 # web_search: mirror results to the on-screen content panel
                 if (name == "web_search" and r

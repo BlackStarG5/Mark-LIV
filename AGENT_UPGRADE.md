@@ -146,3 +146,35 @@ Implementation references:
 - https://learn.microsoft.com/en-us/graph/api/user-list-calendarview?view=graph-rest-1.0
 - https://learn.microsoft.com/en-us/graph/api/user-post-events?view=graph-rest-1.0
 - https://learn.microsoft.com/en-us/entra/msal/python/getting-started/acquiring-tokens
+
+
+## Desktop partner capabilities (September 26 update)
+
+- CPU investigations route directly to live process sampling and show measured
+  average/peak busy time. They cannot reconstruct an earlier spike. Collection
+  overhead is included in the reported duration; sampling is not a historical monitor.
+- `desktop_inspect` reads titled windows/PIDs, active window, monitor geometry,
+  and largest resident-memory processes. Existing screen and computer-control
+  tools handle visual inspection and interaction.
+- `gpu_diagnostics` reads NVIDIA driver telemetry, including utilization,
+  VRAM, temperature, power and performance state. It does not prove hardware health.
+- `malware_scan` starts a Defender custom scan of an explicit absolute path and
+  retains output/job status. Remediation is disabled; a scan is not a whole-PC
+  malware guarantee. Permission failures and the five-minute job limit are reported.
+- `developer_environment` discovers Java/build tools and IntelliJ; it can request
+  opening a specified project in IntelliJ. Project creation refuses overwrite,
+  exact patches require prior reads, and command execution supplies build output.
+- Coding requests select a build workflow, rather than the game installer.
+  Minecraft version and loader must be established; source generation alone is
+  not a verified mod. Minecraft builds and IntelliJ interaction have not been
+  validated end to end in this update.
+- Build/scan jobs receive up to five minutes of automatic result checking,
+  without repeated model polling. An interrupted or timed-out job is not success.
+
+Useful requests: “Investigate my CPU spikes”; “Check my GPU”; “Inspect my
+ desktop environment”; “Scan C:\specific\folder for malware”; or “Build a
+Minecraft mod for [version] using [loader] in [project folder], build it and
+open it in IntelliJ.”
+
+Defender command reference:
+https://learn.microsoft.com/en-us/defender-endpoint/command-line-arguments-microsoft-defender-antivirus

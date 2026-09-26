@@ -367,8 +367,13 @@ class LocalSession:
             from actions.calculator import calculate
             from actions.environment_inspect import inspect_environment
             tool, args = direct
-            handler = calculate if tool == "calculator" else inspect_environment
+            from actions.gpu_diagnostics import gpu_diagnostics
+            from actions.desktop_inspect import desktop_inspect
+            handler = {'calculator': calculate, 'environment_inspect': inspect_environment,
+                       'gpu_diagnostics': gpu_diagnostics, 'desktop_inspect': desktop_inspect}[tool]
             try:
+                if args.get('scope') == 'cpu_diagnostics':
+                    await self.events.put(event(text='I’m sampling CPU usage across running processes. This may take a few moments.'))
                 raw = await asyncio.to_thread(handler, args)
                 data = json.loads(raw)
                 answer = data["answer"]

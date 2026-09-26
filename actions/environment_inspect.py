@@ -41,7 +41,7 @@ def inspect_process(target=None, pid=None):
     return result(ok=True, scope='process', target=target, processes=rows,
                   rss_bytes=total, memory_metric='resident working set (RSS)',
                   memory_note='Includes shared pages; summed processes may count shared pages more than once. Task Manager may display private working set instead.',
-                  answer=f'Matching processes ({names}; {len(rows)} total) use {total / 2**30:.2f} GiB of resident RAM, including shared memory. This is not whole-PC usage.')
+                  answer=f'Matching processes ({names}; {len(rows)} total) use {total / 2**30:.2f} GiB of resident RAM, including shared memory.')
 
 
 def inspect_environment(parameters):
@@ -49,6 +49,11 @@ def inspect_environment(parameters):
     if unknown:
         raise ValueError('Unsupported environment parameters: ' + ', '.join(sorted(unknown)))
     scope = parameters.get('scope', 'app')
+    if scope == 'cpu_diagnostics':
+        if parameters.get('target') is not None or parameters.get('pid') is not None:
+            raise ValueError('CPU diagnostics samples all accessible processes; omit target and pid.')
+        from core.cpu_diagnostics import diagnose_cpu
+        return diagnose_cpu()
     target, pid = parameters.get('target'), parameters.get('pid')
     if target is not None and (not isinstance(target, str) or not target.strip()):
         raise ValueError('target must be a nonempty process name.')
@@ -109,5 +114,5 @@ def inspect_environment(parameters):
     return result(ok=True, **data)
 
 
-TOOL = {'name': 'environment_inspect', 'description': 'Measure JARVIS (app), a named application (process with target or pid), whole PC, speech device, or Ollama server. YOUR usage means app. Never substitute PC or JARVIS totals for another application. Report the measured subject and memory metric.',
-        'parameters': {'type': 'OBJECT', 'properties': {'scope': {'type': 'STRING', 'enum': ['app', 'process', 'pc', 'speech', 'server', 'all']}, 'target': {'type': 'STRING', 'description': 'Application name, e.g. Marvel Rivals'}, 'pid': {'type': 'INTEGER', 'description': 'Exact process ID instead of target'}}, 'required': ['scope'], 'additionalProperties': False}, 'handler': inspect_environment}
+TOOL = {'name': 'environment_inspect', 'description': 'Investigate CPU spikes or heavy CPU consumers with cpu_diagnostics (two-interval process sampling). Measure JARVIS (app), a named application (process with target or pid), whole PC, speech device, or Ollama server. YOUR usage means app. Never substitute PC or JARVIS totals for another application. Report the measured subject and memory metric.',
+        'parameters': {'type': 'OBJECT', 'properties': {'scope': {'type': 'STRING', 'enum': ['app', 'process', 'cpu_diagnostics', 'pc', 'speech', 'server', 'all']}, 'target': {'type': 'STRING', 'description': 'Application name, e.g. Marvel Rivals'}, 'pid': {'type': 'INTEGER', 'description': 'Exact process ID instead of target'}}, 'required': ['scope'], 'additionalProperties': False}, 'handler': inspect_environment}

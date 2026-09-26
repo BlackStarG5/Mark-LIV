@@ -6,6 +6,14 @@ def direct_request(text):
     text = text.strip().casefold()
     text = re.sub(r'^(?:hey[, ]+)?jarvis[, ]+', '', text)
     text = re.sub(r'[, ]+please[.!?]*$', '', text).rstrip(' .?!')
+    if re.fullmatch(r'(?:inspect|check|diagnose) (?:my |the )?gpu(?: status| usage| temperature| issues)?', text):
+        return 'gpu_diagnostics', {}
+    if re.fullmatch(r'(?:inspect|explore) (?:my |the )?desktop(?: environment)?', text):
+        return 'desktop_inspect', {'section': 'overview'}
+    if (re.search(r'\bcpu\b', text)
+            and re.search(r'\b(spik\w*|diagnos\w*|investigat\w*|causes?|busiest|consum\w*)\b', text)
+            and not re.search(r'\b(server|remote|kill|stop|close|disable|restart|delete|change|set|save|write|schedule)\b', text)):
+        return 'environment_inspect', {'scope': 'cpu_diagnostics'}
     if re.fullmatch(r"(?:what(?:'s| is)|calculate|compute) (?:the )?square root of (pi|π|\d+(?:\.\d+)?)", text):
         number = re.search(r'(pi|π|\d+(?:\.\d+)?)$', text).group()
         return 'calculator', {'operation': 'expression', 'expression': f'sqrt({number})'}
