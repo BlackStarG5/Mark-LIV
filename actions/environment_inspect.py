@@ -2,14 +2,66 @@
 import os
 import platform
 import time
+import re
 import psutil
 import requests
 from core import home_llm, runtime_state
 from core.agent_support import result
 
 
+def inspect_process(target=None, pid=None):
+    """Match executable names or installation folders; never substitute PC totals."""
+    def normalized(value):
+        return re.sub(r'[^a-z0-9]', '', value.casefold())
+    needle = normalized(target or '')
+    if pid is None and len(needle) < 3:
+        raise ValueError('Supply a process name of at least three characters or a PID.')
+    rows = []
+    inaccessible = 0
+    for process in psutil.process_iter():
+        try:
+            if pid is not None and process.pid != pid:
+                continue
+            name = process.name()
+            if pid is None and needle not in normalized(name):
+                # Installation folders allow friendly names such as Marvel Rivals.
+                if needle not in normalized(process.exe()):
+                    continue
+            rss = process.memory_info().rss
+            rows.append({'pid': process.pid, 'name': name, 'rss_bytes': rss})
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            inaccessible += 1
+    if not rows:
+        return result(ok=False, scope='process', target=target, pid=pid,
+                      answer='No accessible matching process was found. I cannot report its memory usage.',
+                      inaccessible_processes=inaccessible)
+    rows.sort(key=lambda row: row['rss_bytes'], reverse=True)
+    total = sum(row['rss_bytes'] for row in rows)
+    names = ', '.join(sorted({row['name'] for row in rows}))
+    return result(ok=True, scope='process', target=target, processes=rows,
+                  rss_bytes=total, memory_metric='resident working set (RSS)',
+                  memory_note='Includes shared pages; summed processes may count shared pages more than once. Task Manager may display private working set instead.',
+                  answer=f'Matching processes ({names}; {len(rows)} total) use {total / 2**30:.2f} GiB of resident RAM, including shared memory. This is not whole-PC usage.')
+
+
 def inspect_environment(parameters):
+    unknown = set(parameters) - {'scope', 'target', 'pid'}
+    if unknown:
+        raise ValueError('Unsupported environment parameters: ' + ', '.join(sorted(unknown)))
     scope = parameters.get('scope', 'app')
+    target, pid = parameters.get('target'), parameters.get('pid')
+    if target is not None and (not isinstance(target, str) or not target.strip()):
+        raise ValueError('target must be a nonempty process name.')
+    if pid is not None and (type(pid) is not int or pid <= 0):
+        raise ValueError('pid must be a positive integer.')
+    if target is not None and pid is not None:
+        raise ValueError('Use either target or pid, not both.')
+    if target is not None or pid is not None:
+        if scope not in ('app', 'process'):
+            raise ValueError('Process targets require app or process scope.')
+        scope = 'process'
+    if scope == 'process':
+        return inspect_process(target, pid)
     data = {'scope': scope, 'client_hostname': platform.node()}
     if scope in ('app', 'all'):
         process = psutil.Process(os.getpid())
@@ -32,7 +84,7 @@ def inspect_environment(parameters):
         data['pc']['memory_units'] = 'GiB (legacy keys use gb)'
         if scope == 'pc':
             pc = data['pc']
-            data['answer'] = f"The whole PC uses {pc['ram_used_gb']} of {pc['ram_total_gb']} GiB RAM ({pc['ram_percent']}%). CPU usage is {pc['cpu_percent']}%."
+            data['answer'] = f"The whole PC uses {pc['ram_used_gb']} of {pc['ram_total_gb']} GiB RAM ({pc['ram_percent']}%). CPU busy time averaged over one second is {pc['cpu_percent']}%."
     if scope in ('speech', 'all'):
         data['speech'] = runtime_state.snapshot()
         import sys
@@ -57,5 +109,5 @@ def inspect_environment(parameters):
     return result(ok=True, **data)
 
 
-TOOL = {'name': 'environment_inspect', 'description': 'Measure JARVIS application RAM/CPU, whole PC, observed speech device, or home Ollama server. Ask about YOUR usage means scope=app. Never substitute PC totals for process memory.',
-        'parameters': {'type': 'OBJECT', 'properties': {'scope': {'type': 'STRING', 'enum': ['app', 'pc', 'speech', 'server', 'all']}}, 'required': ['scope']}, 'handler': inspect_environment}
+TOOL = {'name': 'environment_inspect', 'description': 'Measure JARVIS (app), a named application (process with target or pid), whole PC, speech device, or Ollama server. YOUR usage means app. Never substitute PC or JARVIS totals for another application. Report the measured subject and memory metric.',
+        'parameters': {'type': 'OBJECT', 'properties': {'scope': {'type': 'STRING', 'enum': ['app', 'process', 'pc', 'speech', 'server', 'all']}, 'target': {'type': 'STRING', 'description': 'Application name, e.g. Marvel Rivals'}, 'pid': {'type': 'INTEGER', 'description': 'Exact process ID instead of target'}}, 'required': ['scope'], 'additionalProperties': False}, 'handler': inspect_environment}

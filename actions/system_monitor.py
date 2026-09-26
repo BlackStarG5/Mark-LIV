@@ -112,7 +112,7 @@ def _get_cpu_temp() -> float:
 
 def get_system_status() -> dict:
     """Snapshot of current system metrics for the system_status tool."""
-    cpu  = psutil.cpu_percent(interval=0.2)
+    cpu  = psutil.cpu_percent(interval=1.0)
     ram  = psutil.virtual_memory()
     temp = _get_cpu_temp()
     gpu  = _get_gpu_usage()
@@ -124,6 +124,9 @@ def get_system_status() -> dict:
 
     return {
         "cpu_percent":   round(cpu, 1),
+        "cpu_sample_seconds": 1.0,
+        "cpu_metric": "System busy time (psutil), not frequency-adjusted processor utility",
+        "observed_at_unix": time.time(),
         "ram_percent":   round(ram.percent, 1),
         "ram_used_gb":   round(ram.used   / 1024 ** 3, 1),
         "ram_total_gb":  round(ram.total  / 1024 ** 3, 1),

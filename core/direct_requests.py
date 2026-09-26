@@ -16,4 +16,9 @@ def direct_request(text):
         return 'environment_inspect', {'scope': 'app'}
     if re.fullmatch(r"(?:what(?:'s| is) (?:your|jarvis(?:'s)?) (?:ram|memory) (?:use|usage)|check (?:your|jarvis(?:'s)?) (?:ram|memory) usage)", text):
         return 'environment_inspect', {'scope': 'app'}
+    match = re.fullmatch(r"how much (?:ram|memory) is ([a-z0-9][a-z0-9 ._-]{1,60}?) (?:currently )?using(?: on (?:my|this) (?:pc|desktop|computer))?", text)
+    if match:
+        target = match[1]
+        if not re.search(r'\b(?:server|pc|computer|system|you|and|then)\b', target):
+            return 'environment_inspect', {'scope': 'process', 'target': target}
     return None

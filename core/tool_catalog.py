@@ -24,7 +24,7 @@ def quick_route(content, history, names):
         'web_search': r'\b(search (the )?(web|internet)|recent .{0,35}announcement|latest news)\b',
         'save_memory': r'\b(call me|remember that|remember my)\b',
         'calculator': r'\b(calculate|square root|convert .* (?:to|into)|time zone)\b',
-        'environment_inspect': r'\b(ollama|server status|your (?:ram|memory|cpu|gpu)|(?:ram|memory).*you.*using|jarvis.*(?:memory|ram)|speech device)\b',
+        'environment_inspect': r'\b(ollama|server status|your (?:ram|memory|cpu|gpu)|(?:ram|memory).*using|(?:process|application|app).*(?:memory|ram)|jarvis.*(?:memory|ram)|speech device)\b',
         'git_project': r'\b(git|github|commit|pull request|staged diff)\b',
         'document_search': r'\b(index (?:my |the )?(?:documents|folder)|search (?:inside|across) .*documents)\b',
         'project_workspace': r'\b(project files|source files|search .*source|patch .*file)\b',
@@ -70,7 +70,7 @@ def select_tools(content, history, declarations):
     prompt = ('Select up to four tools needed for the request. Return JSON tools=[] for conversation or known facts. '
               'Use web_search for current/uncertain facts, weather_report for weather. '
               'game_updater installs games; it does not answer game questions. '
-              'Use environment_inspect for the assistant own resources or server; system_status means whole PC. '
+              'Use environment_inspect for any named application resources (scope=process, target=application name), the assistant own resources or server; system_status means whole PC. '
               'Use calculator for arithmetic. Use project_workspace/command_runner/git_project for existing project work. '
               'Use tools for requested actions and corrections. Never answer here.\n' + catalog(declarations))
     recent = [m for m in history if m.get('role') in ('user', 'assistant')][-2:]
@@ -99,6 +99,7 @@ def compact_prompt(name, platform, declarations):
         f"You are {name}, the user's capable desktop assistant on {platform}. " + PERSONALITY +
         "Answer directly and usually in one or two sentences; expand when requested. "
         "Identify the subject before measuring: you/your usage means this application; PC means this Windows machine; server means the separate Ollama host. "
+        "Use environment_inspect scope=process with target for other named applications. Check the returned scope and process names match the requested subject before answering. If not, retry with the correct target; never relabel PC or JARVIS measurements as another application. "
         "Use environment_inspect for observed state and calculator for calculations. Never substitute system RAM for application RAM or configuration for a live measurement. "
         "For a multi-step request, track every requested step, execute the appropriate tools, check results, and report unfinished steps. "
         "Use project_workspace to inspect before editing, command_runner for tests, and git_project for version control. "
