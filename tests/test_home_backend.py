@@ -93,7 +93,9 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
                 events = await asyncio.wait_for(self.collect(session), 3)
         self.assertFalse(any(e.tool_call for e in events))
         self.assertTrue(any("failed" in line for line in logs))
-        self.assertEqual(session.history, [])
+        self.assertEqual(session.history[0], {"role": "user", "content": "read"})
+        self.assertIn("Request failed:", session.history[-1]["content"])
+        self.assertFalse(any(m.get("tool_calls") for m in session.history))
 
     async def test_network_failure_retains_previous_history_and_allows_next_turn(self):
         history = [{"role": "user", "content": "old"}, {"role": "assistant", "content": "remembered"}]
@@ -102,7 +104,9 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
             async with session:
                 await session.send_client_content({"parts": [{"text": "first"}]})
                 await asyncio.wait_for(self.collect(session), 3)
-                self.assertEqual(len(history), 2)
+                self.assertEqual(history[:2], [{"role": "user", "content": "old"}, {"role": "assistant", "content": "remembered"}])
+                self.assertEqual(history[-2]["content"], "first")
+                self.assertIn("offline", history[-1]["content"])
                 await session.send_client_content({"parts": [{"text": "second"}]})
                 await asyncio.wait_for(self.collect(session), 3)
         self.assertEqual(history[-1]["content"], "Recovered.")
@@ -120,7 +124,9 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
                 session.interrupt()
                 events = await asyncio.wait_for(self.collect(session), 3)
                 self.assertFalse(any(e.tool_call for e in events))
-                self.assertEqual(session.history, [])
+                self.assertEqual(session.history[0]["content"], "read")
+                self.assertIn("interrupted", session.history[-1]["content"])
+                self.assertFalse(any(m.get("tool_calls") for m in session.history))
 
 
     async def test_first_sentence_is_spoken_before_model_finishes_without_replay(self):

@@ -9,6 +9,8 @@ _lock = threading.Lock()
 
 
 def record(tool, output):
+    from core.chat_store import scoped_path
+    path=scoped_path(PATH)
     text = str(output)
     state = 'reported_result'
     try:
@@ -23,20 +25,22 @@ def record(tool, output):
     entry = {'at': stamp(), 'tool': tool, 'state': state, 'result_excerpt': text[:1500]}
     try:
         with _lock:
-            PATH.parent.mkdir(parents=True, exist_ok=True)
-            if PATH.exists() and PATH.stat().st_size > 1_000_000:
-                PATH.write_text('\n'.join(PATH.read_text(encoding='utf-8').splitlines()[-100:])+'\n', encoding='utf-8')
-            with PATH.open('a', encoding='utf-8') as handle:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists() and path.stat().st_size > 1_000_000:
+                path.write_text('\n'.join(path.read_text(encoding='utf-8').splitlines()[-100:])+'\n', encoding='utf-8')
+            with path.open('a', encoding='utf-8') as handle:
                 handle.write(json.dumps(entry, ensure_ascii=False)+'\n')
     except OSError:
         pass  # A journal failure must never cause an action to be retried.
 
 
 def recent(limit=10):
+    from core.chat_store import scoped_path
+    path=scoped_path(PATH)
     with _lock:
-        if not PATH.exists():
+        if not path.exists():
             return []
-        lines = PATH.read_text(encoding='utf-8').splitlines()[-max(1, min(30, limit)):]
+        lines = path.read_text(encoding='utf-8').splitlines()[-max(1, min(30, limit)):]
     entries = []
     for line in lines:
         try:

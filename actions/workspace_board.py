@@ -9,8 +9,10 @@ PATH = Path(__file__).resolve().parent.parent / 'memory' / 'workspace_board.db'
 
 
 def workspace_board(parameters):
-    PATH.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(PATH, timeout=3)) as db, db:
+    from core.chat_store import scoped_path
+    path=scoped_path(PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(path, timeout=3)) as db, db:
         db.execute('CREATE TABLE IF NOT EXISTS cards (id TEXT PRIMARY KEY, kind TEXT, title TEXT, body TEXT, updated TEXT)')
         action = parameters['action']
         if action == 'list':

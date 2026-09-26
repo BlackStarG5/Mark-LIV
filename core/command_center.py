@@ -18,6 +18,8 @@ def mount(window, root, old_body):
         QTabWidget::pane {border:0;background:#091b29;}
         QTabBar::tab {background:#102939;color:#add9e7;padding:9px 15px;}
         QTabBar::tab:selected {color:#55e1fa;border-bottom:2px solid #55e1fa;}
+        QTreeWidget {background:#0a1d2b;color:#c9e5f0;border:0;padding:8px;}
+        QTreeWidget::item:selected {background:#184054;color:#e2f7ff;}
         QListWidget {background:#0a1d2b;color:#c9e5f0;border:0;padding:8px;}
     ''')
     layout=QHBoxLayout(shell);layout.setContentsMargins(12,10,12,10);layout.setSpacing(14)
@@ -52,7 +54,19 @@ def mount(window, root, old_body):
 
     right_tabs=QTabWidget()
     right_tabs.addTab(window._log,'Conversation')
-    attachments=QWidget();av=QVBoxLayout(attachments);av.addWidget(window._drop_zone);av.addWidget(window._file_hint);av.addStretch()
+    attachments=QWidget();av=QVBoxLayout(attachments)
+    media_list=QListWidget();av.addWidget(media_list)
+    av.addWidget(QLabel('Stored media · double-click to attach to your draft'))
+    def refresh_media():
+        from core import chat_store
+        rows=chat_store.list_media(); signature=repr(rows)
+        if getattr(media_list,'_signature',None)==signature:return
+        media_list._signature=signature;media_list.clear()
+        from PyQt6.QtWidgets import QListWidgetItem
+        for media in rows:
+            item=QListWidgetItem(media['name']);item.setData(Qt.ItemDataRole.UserRole,media['path']);media_list.addItem(item)
+    media_list.itemDoubleClicked.connect(lambda item:window._on_file_selected(item.data(Qt.ItemDataRole.UserRole)))
+    window._media_timer=QTimer(window);window._media_timer.timeout.connect(refresh_media);window._media_timer.start(3000);refresh_media()
     right_tabs.addTab(attachments,'Files')
     right_tabs.addTab(window._console,'Activity Console')
     conversation,cv=card('Conversation & context',right_tabs)
@@ -71,6 +85,11 @@ def mount(window, root, old_body):
     window._dashboard_task_timer=QTimer(window);window._dashboard_task_timer.timeout.connect(refresh_tasks);window._dashboard_task_timer.start(5000);refresh_tasks()
     tv.addWidget(QLabel('Ask JARVIS to create or complete a task.'))
     grid.addWidget(taskcard,1,1)
+    from core.chat_panel import ChatPanel
+    chats=ChatPanel(window);window._chat_panel=chats;chats.setMaximumHeight(230)
+    chatcard,chatlayout=card('Chats & projects',chats)
+    grid.addWidget(chatcard,2,1)
+    grid.removeWidget(core);grid.addWidget(core,0,0,3,1)
 
     telemetry,tl=card('System telemetry · live readings')
     meters=QHBoxLayout();meters.setSpacing(12)
@@ -78,19 +97,26 @@ def mount(window, root, old_body):
         meters.addWidget(bar,1)
     tl.addLayout(meters)
     foot=QHBoxLayout();foot.addWidget(window._uptime_lbl);foot.addWidget(window._proc_lbl);foot.addStretch();foot.addWidget(QLabel('N/A = sensor unavailable'));tl.addLayout(foot)
-    grid.addWidget(telemetry,2,0,1,2)
+    grid.addWidget(telemetry,3,0,1,2)
     grid.setColumnStretch(0,3);grid.setColumnStretch(1,2);grid.setRowStretch(0,3);grid.setRowStretch(1,2)
     layout.addWidget(dashboard,1)
     root.addWidget(shell,1)
 
-    command=QFrame();command.setStyleSheet('QFrame {background:#0b2333;border:1px solid #276079;border-radius:9px;} QLabel {color:#66dcf4;border:0;}')
+    command=QFrame();command.setStyleSheet('QPushButton {background:#143447;color:#c9e5f0;border:1px solid #34708c;border-radius:6px;padding:9px 14px;} QFrame {background:#0b2333;border:1px solid #276079;border-radius:9px;} QLabel {color:#66dcf4;border:0;}')
     row=QHBoxLayout(command);row.setContentsMargins(18,10,18,10)
     row.addWidget(QLabel('TALK TO JARVIS'))
     window._input.setMinimumHeight(36);window._input.setPlaceholderText('Ask a question, plan a project, or give JARVIS a task…');row.addWidget(window._input,1)
+    attach=QPushButton('Attach');attach.clicked.connect(window._choose_attachments);row.addWidget(attach)
+    clear=QPushButton('Clear files');clear.clicked.connect(window._clear_attachments);row.addWidget(clear)
     send=QPushButton('Send');send.setStyleSheet('background:#14546b;color:#d8f8ff;border:1px solid #42bdda;border-radius:6px;padding:9px 20px;');send.clicked.connect(window._send);row.addWidget(send)
     root.addWidget(command)
+    window._file_hint.setText('Attach files, add a message, then press Send.')
+    root.addWidget(window._file_hint)
     # Replace terminal-like typography on controls without altering the HUD renderer.
     for widget in shell.findChildren(QWidget):
         if widget is window.hud: continue
         font=widget.font();font.setFamily('Segoe UI');font.setPointSize(max(9,font.pointSize()));widget.setFont(font)
+    window._refresh_chat_views=lambda: (refresh_media(), refresh_tasks(), window._board.refresh())
     window._command_center=shell
+    from core import chat_store
+    QTimer.singleShot(0,lambda:window._select_chat(chat_store.active_id()))

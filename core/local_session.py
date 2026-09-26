@@ -15,6 +15,8 @@ from pathlib import Path
 from collections import OrderedDict
 from types import SimpleNamespace as NS
 
+from jsonschema import validate, ValidationError
+
 import numpy as np
 from core import home_llm
 
@@ -333,13 +335,28 @@ class LocalSession:
             except asyncio.CancelledError:
                 if not self.cancelled:
                     raise
+                self._remember_failed_turn(parts, "Response interrupted; unfinished actions are not verified.")
                 self.log("SYS: Response stopped.")
             except Exception as exc:
+                self._remember_failed_turn(parts, f"Request failed: {exc}")
                 self.log(f"ERR: Home AI request failed: {exc}")
             finally:
+                persist = self.config.get('persist_history')
+                if persist:
+                    try:
+                        await asyncio.to_thread(persist, list(self.history))
+                    except Exception as exc:
+                        self.log(f'ERR: Chat could not be saved: {exc}')
                 self.tool_done = None
                 self.active = None
                 await self.events.put(event(done=True))
+
+    def _remember_failed_turn(self, parts, reason):
+        text = "\n".join(p.get('text', '') for p in parts)
+        if text:
+            if not self.history or self.history[-1].get('content') != text:
+                self.history.append({'role':'user','content':text})
+            self.history.append({'role':'assistant','content':reason})
 
     async def _turn(self, parts):
         if parts == [{"startup_greeting": True}]:
@@ -359,6 +376,11 @@ class LocalSession:
             latest = refresh()
             for key in ("system_instruction", "session_context"):
                 self.config[key] = latest[key]
+            if 'declarations' in latest:
+                self.config['declarations']=latest['declarations']
+                self.tools=home_llm.tool_specs(latest['declarations'])
+                self.allowed={t['function']['name'] for t in self.tools}
+                self.schemas={t['function']['name']:t['function'].get('parameters',{}) for t in self.tools}
         from core.direct_requests import direct_request
         direct_content = "\n".join(p.get("text", "") for p in parts)
         direct = direct_request(direct_content) if self.config.get("direct_requests") else None
@@ -403,6 +425,8 @@ class LocalSession:
         self._trim(history)
         needs_tool = bool(self.config.get("adaptive_tools") and self.turn_tools)
         tool_retry = False
+        repair_pending = False
+        validation_retries = 0
         for _ in range(int(home_llm.load_config().get("max_tool_rounds", 12))):
             prefix = [{"role": "system", "content": self.config["system_instruction"] + "\n\n" + VOICE_STYLE}]
             if turn_mode == 'clarify':
@@ -428,16 +452,27 @@ class LocalSession:
                 return
             checked = []
             batch_id = uuid.uuid4().hex[:12]
-            for i, call in enumerate(calls):
-                fn = call.get("function", {})
-                args = fn.get("arguments", {})
-                if isinstance(args, str):
-                    args = json.loads(args)
-                if fn.get("name") not in self.allowed or not isinstance(args, dict):
-                    raise ValueError("Model returned an unknown tool or invalid arguments.")
-                from jsonschema import validate
-                validate(args, self.schemas[fn["name"]])
-                checked.append(NS(id=f"{batch_id}_{i}", name=fn["name"], args=args))
+            try:
+                for i, call in enumerate(calls):
+                    fn = call.get("function", {})
+                    args = fn.get("arguments", {})
+                    if isinstance(args, str):
+                        args = json.loads(args)
+                    if fn.get("name") not in self.allowed or not isinstance(args, dict):
+                        raise ValueError("Model returned an unknown tool or invalid arguments.")
+                    validate(args, self.schemas[fn["name"]])
+                    if fn['name'] in ('project_workspace','command_runner') and args.get('root') and args.get('action') != 'init' and not Path(args['root']).is_dir():
+                        raise ValueError('The root directory does not exist. Copy the exact project directory from the original request or the successful read result; no command was started.')
+                    checked.append(NS(id=f"{batch_id}_{i}", name=fn["name"], args=args))
+            except (ValueError, TypeError, ValidationError) as exc:
+                validation_retries += 1
+                if validation_retries > 2:
+                    raise ValueError('Tool arguments remained invalid after two correction attempts; no action in this batch was executed.') from exc
+                history.pop()  # Remove the unexecuted assistant tool batch.
+                history.append({'role':'user','content':'[Execution check] No tools in this batch ran. Correct the arguments using the tool schema and the exact supplied paths. Invalid calls: '+json.dumps(calls,default=str)+' Error: '+str(exc)[:2000]})
+                needs_tool = True
+                tool_retry = False
+                continue
             self.tool_done = asyncio.Event()
             self._awaiting_ids = {c.id for c in checked}
             self.tool_results, self.images = [], []
@@ -451,6 +486,33 @@ class LocalSession:
                 history.append({"role": "tool", "tool_name": result.name,
                                 "content": json.dumps(result.response, ensure_ascii=False, default=str)[:16000]})
             for result in self.tool_results:
+                raw_result = result.response.get('result', '')
+                if str(raw_result).startswith('Missing filename:'):
+                    needs_tool = True
+                    tool_retry = False
+                if result.name == 'command_runner' and re.search(r'\b(fix|debug|repair)\b', content, re.I):
+                    try:
+                        execution = json.loads(raw_result)
+                        if execution.get('status') == 'finished' and execution.get('exit_code') not in (None, 0):
+                            repair_pending = True
+                            needs_tool = True
+                            tool_retry = False
+                            history.append({'role':'user','content':'[Execution check] The requested repair is unfinished: the test failed. Read the failure, patch the implementation, and rerun the unchanged test. Do not stop at a suggestion.'})
+                        elif execution.get('status') == 'finished' and execution.get('exit_code') == 0:
+                            repair_pending = False
+                    except (ValueError, TypeError):
+                        pass
+                if repair_pending:
+                    needs_tool = True
+                    tool_retry = False
+                if result.name == 'desktop_inspect' and 'active window' in content.casefold():
+                    try:
+                        observed=json.loads(raw_result)
+                        if 'windows' not in observed:
+                            needs_tool=True
+                            tool_retry=False
+                            history.append({'role':'user','content':'[Execution check] The active-window part of the request remains unanswered. Call desktop_inspect section=windows or overview before concluding.'})
+                    except (ValueError,TypeError):pass
                 if result.name == "command_runner":
                     try:
                         job = json.loads(result.response.get("result", "{}"))

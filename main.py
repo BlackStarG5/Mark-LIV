@@ -533,7 +533,8 @@ class JarvisLive:
         self.ui             = ui
         self._asst_name     = "JARVI    S"   # updated each session from config
         self.session              = None
-        self._local_history       = []
+        from core import chat_store
+        self._local_history = chat_store.load_history()
         self._local_speech        = LocalSpeech()
         self.audio_in_queue       = None
         self.out_queue            = None
@@ -572,6 +573,8 @@ class JarvisLive:
         self.ui.on_push_to_talk   = self.set_push_to_talk
         self.ui.ptt_hold          = self._on_ptt
         self.ui.on_text_command   = self._on_text_command
+        self.ui.can_send = lambda: bool(self._loop and self.session and (not self._wake_enabled or self._awake))
+        self.ui.on_chat_select = self._on_chat_select
         self.ui.on_remote_clicked = self._make_remote_key
         self.ui.on_interrupt      = self.interrupt
         self.ui.on_voice_change   = self._on_voice_change     # voice picker → rebuild session
@@ -824,15 +827,39 @@ class JarvisLive:
         manual = self._dashboard.get_manual_url()
         return url, key, f"{url}/auto-login?key={key}", manual
 
+    def _on_chat_select(self, chat_id):
+        from core import chat_store
+        if not self._loop or not self.session:
+            chat_store.save_history(self._local_history)
+            chat_store.set_active(chat_id)
+            self._local_history[:] = chat_store.load_history(chat_id)
+            self._session_log = []
+            return True
+        async def switch():
+            session=self.session
+            if session.active is not None or not session.inputs.empty() or not session.audio.empty() or not session.events.empty() or self._is_speaking:
+                return False
+            chat_store.save_history(session.history)
+            chat_store.set_active(chat_id)
+            session.history[:] = chat_store.load_history(chat_id)
+            self._session_log = []
+            return True
+        future = asyncio.run_coroutine_threadsafe(switch(),self._loop)
+        try:
+            return future.result(timeout=3)
+        except Exception:
+            future.cancel()
+            return False
+
     def _on_text_command(self, text: str):
         if not self._loop or not self.session:
-            return
+            return False
         # Respect wake-word sleep: a typed command must not be answered while
         # asleep either (the sleep gate is not just for the mic). Wake first with
         # "Hey Jarvis" or the WAKE NOW button.
         if self._wake_enabled and not self._awake:
             self.ui.write_log("SYS: I'm asleep — say 'Hey Jarvis' or tap WAKE NOW first.")
-            return
+            return False
         self._session_log.append(f"User: {text}")
         self._last_user_speech = time.monotonic()
         self._last_out_logged = ""
@@ -844,6 +871,7 @@ class JarvisLive:
             ),
             self._loop
         )
+        return True
 
     def _tail_active(self) -> bool:
         """True while the speakers may still be finishing our last sentence."""
@@ -965,7 +993,8 @@ class JarvisLive:
             _user_name = ""
 
         memory     = load_memory()
-        mem_str    = format_memory_for_prompt(memory)
+        from core import chat_store
+        mem_str = "" if chat_store.private() else format_memory_for_prompt(memory)
         sys_prompt = _load_system_prompt()
 
         now      = datetime.now()
@@ -1020,10 +1049,12 @@ class JarvisLive:
         from core.tool_catalog import compact_prompt
         from core.home_llm import load_config
         compact = load_config().get("compact_tool_prompt", True)
+        if chat_store.private():
+            _all_decls = [d for d in _all_decls if d.get("name") not in ("save_memory","recall_memory","manage_monitor")]
         parts = [compact_prompt(self._asst_name, _platform.system(), _all_decls) if compact else sys_prompt, identity_ctx]
 
         return {"system_instruction": "\n".join(parts), "declarations": _all_decls,
-                "session_context": "\n".join([mem_str, time_ctx]), "adaptive_tools": True,
+                "persist_history": chat_store.save_history, "session_context": "\n".join([mem_str, time_ctx, chat_store.context()]), "adaptive_tools": True,
                 "prewarm_model": False, "direct_vision": True, "direct_requests": True, "refresh_context": self._build_config}
 
     async def _execute_tool_batch(self, calls):
@@ -1048,6 +1079,10 @@ class JarvisLive:
         print(f"[JARVIS] 🔧 {name}  {args}")
         self.ui.set_state("THINKING")
 
+
+        from core import chat_store
+        if chat_store.private() and name in ("save_memory", "recall_memory", "manage_monitor"):
+            return types.FunctionResponse(id=fc.id,name=name,response={"result":"Unavailable in project-only chat. Use project notes or chat_library for this project."})
 
         if name == "save_memory":
             category = args.get("category", "notes")
@@ -1683,6 +1718,11 @@ class JarvisLive:
                     shown on the UI content panel. Waits for turn_complete event
                     instead of a fixed sleep so there is no unnecessary gap.
         """
+        from core import chat_store
+        if chat_store.private():
+            if self.session:
+                await self.session.say_startup()
+            return
         memory   = load_memory()
         identity = memory.get("identity", {})
 
@@ -1831,6 +1871,10 @@ class JarvisLive:
 
     async def _save_session_summary(self) -> None:
         """Summarise the current session in 1-2 sentences and save to long_term.json."""
+        from core import chat_store
+        if chat_store.private():
+            self._session_log=[]
+            return
         log = self._session_log
         if len(log) < 3:          # need at least one exchange to be worth saving
             return
@@ -1919,6 +1963,9 @@ class JarvisLive:
             if not self._proactive.should_trigger(self._last_user_speech):
                 continue
 
+            from core import chat_store
+            if chat_store.private():
+                continue
             self._proactive.mark_triggered()
 
             try:

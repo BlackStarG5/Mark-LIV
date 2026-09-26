@@ -11,8 +11,10 @@ PATH = Path(__file__).resolve().parent.parent / 'memory' / 'tasks.db'
 
 def task_list(parameters):
     action = parameters['action']
-    PATH.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(PATH, timeout=5)) as conn, conn:
+    from core.chat_store import scoped_path
+    path=scoped_path(PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(path, timeout=5)) as conn, conn:
         conn.execute('CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, title TEXT, due TEXT, status TEXT, updated TEXT)')
         if action == 'add':
             title = parameters.get('title', '').strip()

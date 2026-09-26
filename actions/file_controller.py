@@ -229,6 +229,8 @@ def list_files(path: str = "desktop", show_hidden: bool = False) -> str:
 def create_file(path: str, name: str = "", content: str = "") -> str:
     try:
         base   = _resolve_path(path)
+        if base.is_dir() and not name:
+            return 'Missing filename: path is a directory. Retry create_file with the requested filename in name. This is not a permissions error; no file was created.'
         target = (base / name) if name else base
         if not _is_safe_path(target):
             return f"Access denied: {target}"
