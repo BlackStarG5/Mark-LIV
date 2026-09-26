@@ -33,3 +33,25 @@ class RequiredSearchTests(unittest.TestCase):
         self.assertTrue(requires_web('What white blood cell creates smudge cells in a peripheral blood smear?'))
         self.assertTrue(requires_web('Which cell produces this finding?'))
         self.assertTrue(requires_web('Are you sure? Look it up and fact check.'))
+
+    def test_interrogative_families_across_topic_changes(self):
+        history=[{'role':'tool','tool_name':'web_search','content':'Evidence about blood cells'}]
+        for text in ['When does the Ocarina of Time Remake come out?', 'When can we buy the remake?', 'When will it be available?', 'Where can I find the official release announcement?', 'How soon is the next launch?', 'Who announced the game?']:
+            with self.subTest(text=text):self.assertTrue(requires_web(text,history))
+
+    def test_semantic_external_basis_overrides_answer_mode(self):
+        declarations=[{'name':'web_search','parameters':{'type':'OBJECT','properties':{}}}]
+        with patch('core.tool_catalog.evidence_source',return_value='public'):
+            route=select_tools('Release timing for the Zelda remake, please',[],declarations)
+        self.assertEqual(route,{'web_search'})
+
+    def test_standalone_query_does_not_reuse_ambiguous_or_private_context(self):
+        from core.tool_catalog import standalone_search_query
+        self.assertEqual(standalone_search_query('When does the Zelda remake come out?'),'When does the Zelda remake come out?')
+        for text in ['When does it come out?', 'What is in my file?', 'Is that correct?']:
+            self.assertIsNone(standalone_search_query(text))
+
+    def test_semantic_conversation_does_not_get_web_tools(self):
+        declarations=[{'name':'web_search','parameters':{'type':'OBJECT','properties':{}}}]
+        with patch('core.tool_catalog.evidence_source',return_value='conversation'):
+            self.assertEqual(select_tools('Good to see you again',[],declarations),set())

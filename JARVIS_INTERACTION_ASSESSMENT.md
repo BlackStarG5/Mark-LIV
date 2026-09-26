@@ -40,3 +40,10 @@ No existing user files, settings, notes, or task lists were changed. Application
 - The final actual-home-model repair took 66.1 seconds. It read the implementation, ran the failing assertion, patched `sum(values) + 1` to `sum(values)`, and reran to exit 0 with TEST PASSED. The original assertion was independently checked unchanged. Several redundant reads and mistaken patch attempts occurred before the successful patch: this is a pass on the small task, not evidence of reliable large-project autonomy.
 - Offscreen desktop UI tests passed attachment staging, prompt-plus-file submission, retained drafts while unavailable, file-copy persistence, restored chat history and private-project media filtering. Model/tool tests disabled speech; microphone, TTS and arbitrary GUI workflows were not retested.
 - A fresh live timed-note test saved the apples note with 12 a.m. intact in 8.9 seconds, confirmed by reading the temporary notes database. A fresh desktop test retrieved both monitors and the active window in 41.1 seconds. These pass the tested requests; desktop inspection still made a redundant call.
+
+
+## Evidence routing follow-up
+
+The prior release-date failure was an application routing error: the wording fell through a narrow phrase rule, and the joint tool classifier answered from memory. The update treats interrogative families consistently and uses a separate small semantic evidence classifier for other wording. Public facts require web retrieval; social/creative exchanges may answer directly, and local requests proceed to local-tool selection. Known standalone public questions dispatch read-only research before any answer generation, avoiding the wasted tool-choice/retry calls. Pronoun-based follow-ups still use contextual query planning.
+
+Old web-page dumps are shortened only in working model context. Current-turn evidence and the saved archive remain intact. This reduces prompt growth, but does not establish a fixed latency improvement across server loads. The local 8B model can still misunderstand ambiguous requests or overstate source evidence; these changes are not a guarantee of unrestricted agent accuracy.

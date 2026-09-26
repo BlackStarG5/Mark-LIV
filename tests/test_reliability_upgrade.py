@@ -12,6 +12,21 @@ from core.tool_catalog import quick_route
 
 
 class PipelineTests(unittest.IsolatedAsyncioTestCase):
+    async def test_factual_retrieval_precedes_any_answer_generation(self):
+        from actions.web_search import TOOL
+        session=LocalSession({'system_instruction':'Test','declarations':[TOOL],'adaptive_tools':True},speech=NS(synthesize=lambda _:b''))
+        with patch('core.tool_catalog.select_tools',return_value={'web_search'}),patch.object(session,'_model_reply',new=AsyncMock(return_value={'content':'Verified answer.'})) as reply,patch('core.task_journal.record'):
+            task=asyncio.create_task(session._turn([{'text':'When does the new game come out?'}]))
+            ev=await asyncio.wait_for(session.events.get(),2)
+            self.assertEqual(ev.tool_call.function_calls[0].name,'web_search')
+            self.assertTrue(ev.tool_call.function_calls[0].args['verify_sources'])
+            reply.assert_not_called()
+            session.tool_results=[NS(name='web_search',response={'result':'Read source page: official evidence'})]
+            session.tool_done.set()
+            await asyncio.wait_for(task,2)
+            self.assertTrue(any(m.get('role')=='tool' and 'official evidence' in m['content'] for m in reply.call_args.args[0]))
+
+
     async def test_interrupt_after_generation_clears_discard_before_next_audio(self):
         import main
         session=LocalSession({'system_instruction':'Test','declarations':[]},speech=NS(synthesize=lambda _:b''))
@@ -128,6 +143,17 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ReliabilityTests(unittest.TestCase):
+    def test_old_research_is_compacted_without_mutating_archive_or_current_evidence(self):
+        from core.local_session import working_evidence
+        old={'role':'tool','tool_name':'web_search','content':'old '*2000}
+        fresh={'role':'tool','tool_name':'web_search','content':'fresh '*2000}
+        history=[old,{'role':'user','content':'New topic'},fresh]
+        result=working_evidence(history)
+        self.assertLess(len(result[0]['content']),1200)
+        self.assertEqual(result[2],fresh)
+        self.assertEqual(len(old['content']),8000)
+
+
     def test_file_creation_does_not_overwrite(self):
         from actions import file_controller as files
         with tempfile.TemporaryDirectory() as folder, patch.object(files, '_is_safe_path', return_value=True), patch.object(files, 'push_undo'):

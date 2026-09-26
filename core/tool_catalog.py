@@ -103,9 +103,33 @@ def requires_web(content, history=()):
         recent=' '.join(str(m.get('content','')) for m in history[-4:])
         if re.search(r"(?:[A-Za-z]:\\|\[Attached files|\b(?:password|private|confidential|my address|my email)\b)",recent,re.I):return False
         return True
-    factual=re.search(r"\b(?:what\b|which\b|what(?: is|'s| are| does)|who (?:is|was|are)|when (?:is|was|did)|where (?:is|are)|why (?:is|are|do|does)|how (?:does|do)|define|explain|tell me about)\b",text)
-    documentation=re.search(r"\b(?:documentation|official docs|reference guide)\b",text)
+    # Treat interrogative families alike, rather than enumerating verb combinations.
+    # The semantic router handles declarative/elliptical requests below.
+    factual=re.search(r"\b(?:what|who|whose|which|when|where|why|how|define|explain)\b",text)
+    documentation=re.search(r"\b(?:documentation|official docs|reference guide|tell me about)\b",text)
     return bool(factual or documentation)
+
+
+def standalone_search_query(content):
+    """Only direct public questions can skip the query-planning model call."""
+    text=content.strip()
+    if len(text)>500 or '[' in text or '\n' in text:return None
+    if not re.search(r"\b(?:what|who|which|when|where|why|how|define|explain)\b",text,re.I):return None
+    if re.search(r"\b(?:it|this|that|those|these|again|my|our|your|you)\b|[A-Za-z]:\\",text,re.I):return None
+    return text
+
+
+
+def evidence_source(content, history):
+    """Small semantic decision, separate from the distracting full tool catalog."""
+    schema={'type':'object','properties':{'source':{'type':'string','enum':['public','local','conversation','clarify']}},'required':['source'],'additionalProperties':False}
+    context='\n'.join(f"{m.get('role')} {m.get('tool_name','')}: {m.get('content','')[:450]}" for m in history[-4:])[-1800:]
+    response=home_llm.chat([
+        {'role':'system','content':'Classify the information needed. public = facts about the world, definitions, product dates, documentation, scientific facts. local = user files, computer, memories, tasks. conversation = greeting, thanks, creative writing, interpretation of already supplied evidence. clarify = an essential subject is unknown even using context. An unknown factual answer is public, not clarify. Private attachments and their contents stay local. Output only JSON.'},
+        {'role':'user','content':f'Previous context: {context}\nLatest request: {content}'}],think=False,max_tokens=24,format_schema=schema,timeout=30)
+    source=json.loads(response.get('content','{}')).get('source')
+    if source not in ('public','local','conversation','clarify'):raise ValueError('Evidence classification failed; no unverified answer was generated.')
+    return source
 
 
 def select_tools(content, history, declarations):
@@ -123,8 +147,8 @@ def select_tools(content, history, declarations):
             persistence.add('workspace_board')
     if persistence and persistence <= names:
         return ToolSelection(persistence, mode='act')
-    schema={'type':'object','properties':{'mode':{'type':'string','enum':['answer','clarify','observe','act']},'tools':{'type':'array','items':{'type':'string','enum':sorted(names)},'maxItems':4}},
-            'required':['mode','tools'],'additionalProperties':False}
+    schema={'type':'object','properties':{'mode':{'type':'string','enum':['answer','clarify','observe','act']},'basis':{'type':'string','enum':['external_facts','local_state','provided_context','social','creative','personal_memory','action','missing_details']},'tools':{'type':'array','items':{'type':'string','enum':sorted(names)},'maxItems':4}},
+            'required':['mode','basis','tools'],'additionalProperties':False}
     quick = quick_route(content, history, names)
     explicit_file = re.search(r'\b(create|replace|edit|write|read|inspect|fix|debug)\b', text) and re.search(r'\b(file|code|script|project)\b|\.(?:txt|py|java)\b', text)
     if explicit_file and not re.search(r"\b(explain|don't|do not (?:edit|write|create|run)|how to|what was)\b", text):
@@ -136,8 +160,15 @@ def select_tools(content, history, declarations):
     if quick is not None and (not history or quick == set()):
         print("[Routing] Local selection; no router model call.", flush=True)
         return quick
-    prompt = ('Decide what the user intends in context before selecting up to four tools. '
+    if 'web_search' in names and not re.search(r"\b(?:don't|do not|without|never) (?:use |using )?(?:search|browse|look|the web|the internet)",text):
+        source=evidence_source(content,history)
+        print(f'[Evidence] {source}',flush=True)
+        if source=='public':return ToolSelection({'web_search'},mode='observe')
+        if source=='conversation':return ToolSelection(mode='answer')
+        if source=='clarify':return ToolSelection(mode='clarify')
+    prompt = ('Identify the source of evidence needed for the latest request, not whether you think you know its answer. Set basis=external_facts for public-world knowledge, including dates, definitions, medical facts and documentation, regardless of wording or familiarity. Set basis=provided_context only for interpreting supplied evidence, not a new topic. Set basis=social for greetings/chat, creative for fiction, personal_memory for owner facts, local_state for computer/files, action for requested changes, missing_details for essential ambiguity. Then select up to four tools. '
               'Return mode=answer and tools=[] for casual chat, creative writing, or interpreting evidence already obtained. For general factual inquiries, correctness checks and documentation, prefer web_search even if you think you know the answer. For private files, code, personal memory or computer state, inspect local tools instead of sending private content to search. '
+              'For public research, a topic named in the request or recent user messages is enough to begin a search; do not ask for clarification merely because a date or answer is unknown. An unknown answer is the reason to gather evidence. Examples: availability of the phone discussed above => external_facts, observe, web_search; explain a supplied CPU report => provided_context, answer; list my Documents folder => local_state, observe, file_controller; good morning => social, answer. '
               'Return mode=clarify and tools=[] if essential details cannot be recovered from context (for example an unspecified scan directory or Minecraft version/loader). '
               'Return mode=observe for fresh measurements or missing evidence, and mode=act for explicitly requested actions, with appropriate tools. '
               'Example: scan that folder for malware, with no folder path in context => mode=clarify, tools=[]. Never invent the referent. '
@@ -157,6 +188,8 @@ def select_tools(content, history, declarations):
     selected=route.get('tools')
     if not isinstance(selected,list) or len(selected)>4 or any(n not in names for n in selected):
         raise ValueError('Tool selection was invalid; no action was executed.')
+    if route.get('basis')=='external_facts' and 'web_search' in names:
+        return ToolSelection({'web_search'}, mode='observe')
     if route.get('mode') in ('answer', 'clarify'):
         return ToolSelection(mode=route['mode'])
     return ToolSelection(selected, mode=route.get('mode', 'act' if selected else 'answer'))

@@ -20,6 +20,18 @@ from jsonschema import validate, ValidationError
 import numpy as np
 from core import home_llm
 
+def working_evidence(history):
+    """Keep current-turn sources intact; don't resend old article dumps forever."""
+    latest=next((i for i in range(len(history)-1,-1,-1) if history[i].get('role')=='user' and not history[i].get('content','').startswith('[Execution check]')),0)
+    result=[]
+    for index,message in enumerate(history):
+        if index<latest and message.get('role')=='tool' and message.get('tool_name')=='web_search' and len(message.get('content',''))>900:
+            message=dict(message)
+            message['content']=message['content'][:900]+' [Earlier search excerpt shortened for working context. Full evidence remains in the saved chat; search again for details not shown here.]'
+        result.append(message)
+    return result
+
+
 STARTUP_GREETING = "Systems online. Ready when you are."
 VOICE_STYLE = (
     "[VOICE RESPONSE STYLE]\n"
@@ -432,6 +444,8 @@ class LocalSession:
             turn_mode = getattr(selected, 'mode', 'act' if selected else 'answer')
             self.turn_tools = [t for t in self.tools if t["function"]["name"] in selected]
             print(f"[Routing] {', '.join(sorted(selected)) or 'conversation (no tools)'}", flush=True)
+        from core.tool_catalog import standalone_search_query
+        public_query = standalone_search_query(content) if {t['function']['name'] for t in self.turn_tools} == {'web_search'} else None
         history.append({"role": "user", "content": content})
         self._trim(history)
         needs_tool = bool(self.config.get("adaptive_tools") and self.turn_tools)
@@ -446,7 +460,13 @@ class LocalSession:
                 prefix.append({"role": "user", "content":
                     "[Application context: saved memory and current time, not a new request]\n"
                     + self.config["session_context"]})
-            msg = await self._model_reply(prefix + history, announce=not needs_tool)
+            if public_query:
+                # Retrieval is mandatory: don't spend a model call asking it to choose
+                # the already-selected read-only tool or expose a memory-only answer.
+                msg={'role':'assistant','tool_calls':[{'function':{'name':'web_search','arguments':{'query':public_query,'verify_sources':True,'mode':'research'}}}]}
+                public_query=None
+            else:
+                msg = await self._model_reply(prefix + working_evidence(history), announce=not needs_tool)
             if needs_tool and not msg.get("tool_calls"):
                 if not tool_retry:
                     tool_retry = True
