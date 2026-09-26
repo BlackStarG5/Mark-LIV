@@ -70,13 +70,13 @@ _IMG_MAX_H = 720
 _JPEG_Q    = 82
 
 
-def _compress(img_bytes: bytes, source_format: str = "PNG") -> tuple[bytes, str]:
+def _compress(img_bytes: bytes, source_format: str = "PNG", max_size=None) -> tuple[bytes, str]:
     if not _PIL:
         return img_bytes, f"image/{source_format.lower()}"
 
     try:
         img = PIL.Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        img.thumbnail((_IMG_MAX_W, _IMG_MAX_H), PIL.Image.BILINEAR)
+        img.thumbnail(max_size or (_IMG_MAX_W, _IMG_MAX_H), PIL.Image.BILINEAR)
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=_JPEG_Q, optimize=False)
         return buf.getvalue(), "image/jpeg"
@@ -85,18 +85,21 @@ def _compress(img_bytes: bytes, source_format: str = "PNG") -> tuple[bytes, str]
         return img_bytes, f"image/{source_format.lower()}"
 
 
-def _capture_screen() -> tuple[bytes, str]:
+def _capture_screen(monitor: int = 0) -> tuple[bytes, str]:
 
     if not _MSS:
         raise RuntimeError("mss is not installed. Run: pip install mss")
 
     with mss.mss() as sct:
         monitors = sct.monitors          # [0] = all combined, [1..n] = real screens
-        target   = monitors[1] if len(monitors) > 1 else monitors[0]
+        monitor = int(monitor)
+        if monitor < 0 or monitor >= len(monitors):
+            raise ValueError(f"Monitor {monitor} unavailable; choose 1 through {len(monitors)-1}, or 0 for all displays.")
+        target = monitors[monitor]
         shot     = sct.grab(target)
         png      = mss.tools.to_png(shot.rgb, shot.size)
 
-    return _compress(png, "PNG")
+    return _compress(png, "PNG", (2560, 1440) if monitor == 0 else (1920, 1080))
 
 
 def _cv2_backend() -> int:

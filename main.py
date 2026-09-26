@@ -352,6 +352,7 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
+                "monitor": {"type": "INTEGER", "description": "Screen display: 0=all monitors (default), 1=first display, 2=second display. Use the requested display."},
                 "angle": {"type": "STRING", "description": "'screen' to capture display, 'camera' for webcam. Default: 'screen'"},
                 "text":  {"type": "STRING", "description": "The question or instruction about the captured image"}
             },
@@ -988,7 +989,7 @@ class JarvisLive:
                       'the form from a different language than the one you are '
                       'speaking in this sentence.')
         identity_ctx = (
-            f"[IDENTITY]\n"
+            f"[CURRENT IDENTITY — overrides older conversation and saved memory]\n"
             f"Your name is {self._asst_name}. "
             f"Always refer to yourself as {self._asst_name}.\n"
             f"{_addr}\n\n"
@@ -1023,7 +1024,22 @@ class JarvisLive:
 
         return {"system_instruction": "\n".join(parts), "declarations": _all_decls,
                 "session_context": "\n".join([mem_str, time_ctx]), "adaptive_tools": True,
-                "prewarm_model": False}
+                "prewarm_model": False, "direct_vision": True, "refresh_context": self._build_config}
+
+    async def _execute_tool_batch(self, calls):
+        results = []
+        stopped = False
+        for fc in calls:
+            if stopped:
+                result = types.FunctionResponse(id=fc.id, name=fc.name,
+                    response={"result": "Not executed: a file already exists; this request was stopped."})
+            else:
+                print(f"[JARVIS] 📞 {fc.name}")
+                result = await self._execute_tool(fc)
+                stopped = (fc.name == "file_controller" and
+                           str(result.response.get("result", "")).startswith("File already exists:"))
+            results.append(result)
+        return results
 
     async def _execute_tool(self, fc) -> types.FunctionResponse:
         name = fc.name
@@ -1041,6 +1057,9 @@ class JarvisLive:
                 return types.FunctionResponse(id=fc.id, name=name, response={"result": "Memory not saved: key and value must be nonempty."})
             if key and value:
                 update_memory({category: {key: {"value": value}}})
+                if category == "identity" and key in ("name", "user_name", "preferred_name"):
+                    from memory.config_manager import save_assistant_config
+                    save_assistant_config(self._asst_name, str(value))
                 print(f"[Memory] 💾 save_memory: {category}/{key} = {value}")
             if not self.ui.muted:
                 self.ui.set_state("LISTENING")
@@ -1089,7 +1108,7 @@ class JarvisLive:
                         print(f"[Vision] 📷 Camera: {len(img_b):,} bytes")
                         _stall = "camera"
                     else:
-                        img_b, mime_t = await loop.run_in_executor(None, _capture_screen)
+                        img_b, mime_t = await loop.run_in_executor(None, lambda: _capture_screen(int(args.get("monitor", 0))))
                         print(f"[Vision] 🖥️  Screen: {len(img_b):,} bytes")
                         _stall = "screen"
                     self._pending_vision = (img_b, mime_t, user_text, angle)
@@ -1423,6 +1442,7 @@ class JarvisLive:
                             # twice AND made the avatar mouth it twice.
                             if txt and not _is_repeat_chunk(txt, out_buf):
                                 out_buf.append(txt)
+                                self.ui.write_log(f"{self._asst_name}: {txt}")
                                 # Hand the words to the mouth as they arrive, so
                                 # the avatar can form the consonants the audio
                                 # alone cannot show. Pure string work — it adds
@@ -1465,7 +1485,6 @@ class JarvisLive:
                                     full_out = ""
                             if full_out:
                                 self._last_out_logged = full_out
-                                self.ui.write_log(f"{self._asst_name}: {full_out}")
                                 self._session_log.append(f"{self._asst_name}: {full_out}")
                                 if self._dashboard:
                                     asyncio.create_task(self._dashboard.broadcast({
@@ -1485,11 +1504,7 @@ class JarvisLive:
                                 asyncio.create_task(_cam_close())
 
                     if response.tool_call:
-                        fn_responses = []
-                        for fc in response.tool_call.function_calls:
-                            print(f"[JARVIS] 📞 {fc.name}")
-                            fr = await self._execute_tool(fc)
-                            fn_responses.append(fr)
+                        fn_responses = await self._execute_tool_batch(response.tool_call.function_calls)
                         await self.session.send_tool_response(
                             function_responses=fn_responses
                         )

@@ -233,17 +233,15 @@ def create_file(path: str, name: str = "", content: str = "") -> str:
         if not _is_safe_path(target):
             return f"Access denied: {target}"
         target.parent.mkdir(parents=True, exist_ok=True)
-        existed = target.exists()
-        previous = None
-        if existed:
-            try:
-                previous = target.read_text(encoding="utf-8", errors="ignore")
-            except Exception:
-                previous = None
-        target.write_text(content, encoding="utf-8")
-        push_undo(f"created {target.name}",
-                  _undo_write(target, previous) if existed else _undo_create(target))
-        return f"File created: {target.name}"
+        try:
+            with target.open("x", encoding="utf-8") as handle:
+                handle.write(content)
+        except FileExistsError:
+            return f"File already exists: {target}. Nothing was changed."
+        push_undo(f"created {target.name}", _undo_create(target))
+        if target.read_text(encoding="utf-8") != content.replace("\r\n", "\n"):
+            return f"Created {target}, but content verification failed."
+        return f"File created and contents verified: {target}"
     except Exception as e:
         return f"Could not create file: {e}"
 
@@ -439,7 +437,9 @@ def write_file(path: str, name: str = "", content: str = "",
         with open(target, mode, encoding="utf-8") as f:
             f.write(content)
 
-        action = "Appended to" if append else "Written to"
+        if not append and target.read_text(encoding="utf-8") != content.replace("\r\n", "\n"):
+            return f"Write completed but content verification failed: {target}"
+        action = "Appended to" if append else "Written and contents verified"
         if undoable:
             push_undo(f"wrote to {target.name}", _undo_write(target, previous))
             return f"{action}: {target.name}"
